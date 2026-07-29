@@ -17,6 +17,11 @@ future LangGraph routing graph. It is designed so LLM-backed intelligence
 - **providers/** — Abstract interfaces for external capabilities (text
   LLM, speech-to-text, text-to-speech), each with a fake implementation
   for tests and local development, isolating vendor-specific code.
+- **db/** — Async SQLAlchemy 2 foundation: declarative `Base`, a lazily
+  created engine/session factory, a FastAPI session dependency, and a
+  `SELECT 1` readiness check. Infrastructure only in Phase 0.2 — no
+  business-domain tables. Alembic (`backend/alembic/`), not the app, owns
+  all schema creation and changes.
 - **safety/** — Emergency escalation detection and disclaimers. Placeholder
   in Phase 0; real logic is a dedicated future milestone.
 - **services/** — Business logic orchestrating schemas, providers, and the
@@ -58,9 +63,11 @@ recommendation → booking confirmation. The emergency-escalation branch
 [safety boundary](safety-design.md). Phase 0 ships none of this logic —
 only the schemas and package skeleton that will eventually host it.
 
-## Phase 0 scope
+## Phase 0 / 0.2 scope
 
-Only the package skeleton, abstract provider interfaces with fake
-implementations, domain schemas, two read-only endpoints, configuration,
-and engineering tooling exist. No graph wiring, no real provider calls, no
-persistence.
+The package skeleton, abstract provider interfaces with fake
+implementations, domain schemas, configuration, and engineering tooling
+exist (Phase 0), plus an async SQLAlchemy/Alembic persistence foundation
+and a `GET /api/v1/health/readiness` endpoint (Phase 0.2). No graph
+wiring, no real provider calls, and no business-domain tables (doctors,
+specialties, locations, appointment slots) yet — those are Phase 1+.

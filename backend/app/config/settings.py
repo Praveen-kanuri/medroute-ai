@@ -27,7 +27,14 @@ class Settings(BaseSettings):
     deepgram_stt_model: str = "flux-general-en"
     deepgram_tts_model: str = "aura-2-thalia-en"
 
-    database_url: str | None = None
+    database_url: SecretStr | None = None
+    database_echo: bool = False
+
+    @property
+    def database_configured(self) -> bool:
+        """Whether a non-empty DATABASE_URL is present. Never exposes the URL itself."""
+        url = self.database_url
+        return url is not None and bool(url.get_secret_value())
 
     @property
     def groq_configured(self) -> bool:

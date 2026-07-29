@@ -13,6 +13,9 @@ dependencies = [
     "deepgram-sdk>=7.6.0",
     "httpx>=0.28.1",
     "tenacity>=9.1.4",
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "asyncpg>=0.31.0",
+    "alembic>=1.18.5",
 ]
 
 [dependency-groups]
@@ -26,6 +29,9 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: requires a running PostgreSQL instance (see README).",
+]
 
 [tool.ruff]
 line-length = 100

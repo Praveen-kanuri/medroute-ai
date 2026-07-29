@@ -67,3 +67,39 @@ def test_secret_values_do_not_appear_in_serialized_output(monkeypatch) -> None:
     assert "super-secret-deepgram-value" not in str(dumped)
     assert "super-secret-groq-value" not in dumped_json
     assert "super-secret-deepgram-value" not in dumped_json
+
+
+def test_database_not_configured_without_url(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.database_url is None
+    assert settings.database_configured is False
+
+
+def test_database_configured_with_url(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://super-secret-user:super-secret-password@localhost:5432/medroute",
+    )
+    settings = Settings(_env_file=None)
+    assert settings.database_configured is True
+
+
+def test_database_url_does_not_appear_in_repr_or_serialized_output(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://super-secret-user:super-secret-password@localhost:5432/medroute",
+    )
+    settings = Settings(_env_file=None)
+    rendered = repr(settings)
+    dumped = str(settings.model_dump())
+    dumped_json = settings.model_dump_json()
+    assert "super-secret-password" not in rendered
+    assert "super-secret-password" not in dumped
+    assert "super-secret-password" not in dumped_json
+
+
+def test_database_echo_defaults_to_false(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_ECHO", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.database_echo is False

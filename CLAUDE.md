@@ -74,6 +74,8 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 0 — repository and engineering foundation only. No LLM calls, no
-voice/image processing, no database, no real appointment logic. See
+Phase 0.2 — PostgreSQL persistence foundation (infrastructure only: async
+SQLAlchemy engine/session, Alembic migrations, readiness check). No LLM
+calls, no voice/image processing, no business-domain tables (doctors,
+specialties, appointments), no real appointment logic yet. See
 `docs/roadmap.md` for what comes next.

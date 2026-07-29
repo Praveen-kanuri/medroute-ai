@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 0 — Repository & Engineering Foundation (current)
+## Phase 0 — Repository & Engineering Foundation (complete)
 
 - Backend package skeleton (api, graph, providers, safety, schemas,
   services, tools, config).
@@ -10,9 +10,23 @@
 - Environment-based configuration.
 - Docker, Docker Compose, CI workflow, docs scaffolding.
 
+## Phase 0.2 — PostgreSQL Persistence Foundation (current)
+
+- Async SQLAlchemy 2.x engine, session factory, and FastAPI session
+  dependency; Alembic owns all schema changes (no `metadata.create_all()`
+  at runtime).
+- Minimal infrastructure-only schema used to validate the persistence
+  stack end-to-end — no business-domain tables yet.
+- `GET /api/v1/health/readiness` distinguishing process liveness from
+  database-backed readiness.
+- Docker Compose PostgreSQL service for local development.
+- Doctor/specialty/appointment persistence tables are explicitly out of
+  scope here; they arrive in Phase 1 once that domain schema is defined.
+
 ## Phase 1 — Symptom Intake & Deterministic Doctor Data (planned)
 
-- Static/synthetic doctor and specialty dataset.
+- Static/synthetic doctor and specialty dataset, persisted via the
+  Phase 0.2 database foundation.
 - Doctor search service and endpoint (deterministic, no LLM).
 - Intake endpoint accepting `SymptomIntake`, no routing yet.
 
@@ -38,6 +52,5 @@
 
 ## Later (unscheduled)
 
-- Persistence layer (database-backed doctor/appointment data).
 - Authentication.
 - Deployment/hosting.

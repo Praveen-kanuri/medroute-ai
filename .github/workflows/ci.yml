@@ -11,6 +11,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: medroute_ci
+          POSTGRES_USER: medroute_ci
+          POSTGRES_PASSWORD: medroute_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medroute_ci -d medroute_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://medroute_ci:medroute_ci_password@localhost:5432/medroute_ci
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +40,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
 
       - name: Ruff lint
         run: uv run ruff check .

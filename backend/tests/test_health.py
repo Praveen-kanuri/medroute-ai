@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.config.settings import Settings, get_settings
 from app.main import app
 
 client = TestClient(app)
@@ -33,3 +34,38 @@ def test_app_starts_in_fake_mode_without_credentials(monkeypatch) -> None:
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     response = client.get("/health")
     assert response.status_code == 200
+
+
+def test_readiness_unavailable_when_database_not_configured() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, database_url=None)
+    try:
+        response = client.get("/api/v1/health/readiness")
+        assert response.status_code == 503
+        assert response.json() == {"status": "unavailable"}
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+
+def test_readiness_unavailable_when_database_unreachable() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://user:pass@127.0.0.1:1/nonexistent",
+    )
+    try:
+        response = client.get("/api/v1/health/readiness")
+        assert response.status_code == 503
+        assert response.json() == {"status": "unavailable"}
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+
+def test_readiness_response_never_contains_database_url() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://user:super-secret-password@127.0.0.1:1/nonexistent",
+    )
+    try:
+        response = client.get("/api/v1/health/readiness")
+        assert "super-secret-password" not in response.text
+    finally:
+        app.dependency_overrides.pop(get_settings, None)

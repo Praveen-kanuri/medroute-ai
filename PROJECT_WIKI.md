@@ -42,8 +42,9 @@ It is explicitly **backend-first**: the current build is a FastAPI service
 with a package skeleton for a future LangGraph orchestration graph. A
 React/TypeScript frontend is planned but not yet started (Phase 5).
 
-**Stack:** Python 3.11 · uv · FastAPI · Pydantic v2 · LangGraph (future
-wiring) · pytest · Ruff · mypy · Docker · GitHub Actions.
+**Stack:** Python 3.11 · uv · FastAPI · Pydantic v2 · SQLAlchemy 2 (async) ·
+asyncpg · Alembic · LangGraph (future wiring) · pytest · Ruff · mypy ·
+Docker · GitHub Actions.
 
 ## 2. Safety boundary (non-negotiable)
 
@@ -76,16 +77,21 @@ routing graph, designed so that LLM-backed intelligence (routing
 suggestions) is strictly separated from deterministic data (doctor
 directory, appointment slots, bookings).
 
-| Layer | Purpose | Phase 0 status |
+| Layer | Purpose | Status |
 |---|---|---|
-| `api/` | HTTP surface — thin FastAPI routers, no business logic | 2 endpoints live |
+| `api/` | HTTP surface — thin FastAPI routers, no business logic | 3 endpoints live |
 | `schemas/` | Pydantic v2 models — the contract between API, graph, and services | Fully defined |
+| `db/` | Async SQLAlchemy 2 foundation: declarative `Base`, engine/session lifecycle, readiness check | Infrastructure only — no business-domain tables yet |
 | `graph/` | LangGraph state machine: intake → routing → doctor search → booking | Empty package, future milestone |
 | `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done, real integrations future |
 | `safety/` | Emergency escalation detection and disclaimers | Placeholder constants only |
 | `services/` | Business logic orchestrating schemas, providers, and the graph | Empty package, future milestone |
 | `tools/` | LangGraph tool functions (e.g., doctor search) | Empty package, future milestone |
 | `config/` | Environment-driven settings via pydantic-settings | Done |
+
+Schema migrations for `db/` live outside `app/`, under `backend/alembic/` —
+Alembic is the only mechanism that creates or changes tables; the app never
+calls `Base.metadata.create_all()`.
 
 ## 4. Data flow (target, future milestones)
 
@@ -141,8 +147,9 @@ Versioned under `/api/v1`, aggregated in `backend/app/api/router.py`.
 
 | Method & path | Purpose | Notes |
 |---|---|---|
-| `GET /health` | Liveness check | Returns `{"status": "ok"}` |
+| `GET /health` | Liveness — is the process running? | Returns `{"status": "ok"}`; unaffected by database state |
 | `GET /api/v1/system/info` | App metadata | Returns `app_name`, `app_env`, `log_level` — **never** returns API keys or secrets |
+| `GET /api/v1/health/readiness` | Readiness — can this instance serve database-backed requests? | `SELECT 1` against PostgreSQL; 200 `{"status": "ready"}` or 503 `{"status": "unavailable"}` — **never** returns connection details |
 
 ## 8. Configuration
 
@@ -157,11 +164,15 @@ commit a real `.env`).
 | `PROVIDER_MODE` | `fake` | Fake providers require no credentials; this is the only supported mode in Phase 0 |
 | `GROQ_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake` |
 | `DEEPGRAM_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake` |
-| `DATABASE_URL` | `None` (optional) | Unused — no persistence layer yet |
+| `DATABASE_URL` | `None` (optional) | `SecretStr`; async (`postgresql+asyncpg://…`); required only for persistence and `/api/v1/health/readiness` |
+| `DATABASE_ECHO` | `false` | SQLAlchemy engine SQL echo, local debugging only |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | — | Consumed by Docker Compose's `postgres` service; must match `DATABASE_URL`'s credentials |
 
 The app starts and serves requests with **no credentials set at all**, as
 long as it stays in fake mode — this is covered by tests
-(`test_config.py`, `test_health.py`).
+(`test_config.py`, `test_health.py`). `DATABASE_URL` and `DATABASE_ECHO`
+are never exposed via `repr()`, serialization, endpoints, or exceptions —
+see `test_config.py`'s secret-masking tests.
 
 ## 9. Engineering & tooling
 
@@ -170,12 +181,15 @@ long as it stays in fake mode — this is covered by tests
 - **Types:** mypy, strict mode
 - **Tests:** pytest (`pytest-asyncio`, `httpx` for `TestClient`)
 - **Containerization:** `backend/Dockerfile` (slim Python 3.11, `uv sync --no-dev`,
-  uvicorn entrypoint) + root `docker-compose.yml` (single `backend` service,
-  no database service yet)
-- **CI:** `.github/workflows/ci.yml` — on push to `main` and on PRs, runs
-  from the `backend/` working directory:
-  `uv sync --frozen` → `ruff check .` → `ruff format --check .` →
-  `mypy app` → `pytest`
+  uvicorn entrypoint) + root `docker-compose.yml` (`backend` service, plus a
+  `postgres` service — `postgres:17-alpine`, named volume
+  `medroute_postgres_data`, `pg_isready` health check)
+- **Migrations:** Alembic, async-compatible `backend/alembic/env.py` — reads
+  `DATABASE_URL` from `Settings` at runtime (never hardcoded in `alembic.ini`)
+- **CI:** `.github/workflows/ci.yml` — on push to `main` and on PRs, runs a
+  PostgreSQL 17 service container, then from the `backend/` working directory:
+  `uv sync --frozen` → `alembic upgrade head` → `ruff check .` →
+  `ruff format --check .` → `mypy app` → `pytest`
 
 ## 10. Repository layout
 
@@ -183,21 +197,25 @@ long as it stays in fake mode — this is covered by tests
 MedRoute-AI/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                  # FastAPI app factory
+│   │   ├── main.py                  # FastAPI app factory (disposes DB engine on shutdown)
 │   │   ├── config/settings.py       # pydantic-settings config
 │   │   ├── api/
 │   │   │   ├── router.py            # aggregates v1 routes
-│   │   │   └── v1/{health,system}.py
+│   │   │   └── v1/{health,readiness,system}.py
 │   │   ├── schemas/                 # intake, routing, doctor, booking
+│   │   ├── db/                      # base, session (engine/sessionmaker), models
 │   │   ├── providers/{llm,speech_to_text,text_to_speech}/{base,fake}.py
 │   │   ├── graph/                   # placeholder — future LangGraph graph
 │   │   ├── safety/constants.py      # disclaimer text, no logic yet
 │   │   ├── services/                # placeholder — future business logic
 │   │   └── tools/                   # placeholder — future LangGraph tools
-│   ├── tests/                       # health, config, providers, schemas
+│   ├── alembic/                     # async env.py + versions/ (Alembic-owned schema)
+│   ├── alembic.ini                  # no embedded credentials — URL set by env.py
+│   ├── tests/                       # health, config, db, providers, schemas
+│   │   └── integration/             # requires a real PostgreSQL, self-skips otherwise
 │   ├── pyproject.toml
 │   └── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml                # backend + postgres services
 ├── .env.example
 ├── CLAUDE.md                        # instructions for Claude Code on this repo
 ├── README.md
@@ -253,13 +271,14 @@ uv run pytest
 
 | Phase | Scope | Status |
 |---|---|---|
-| **Phase 0** | Repository & engineering foundation: package skeleton, provider interfaces + fakes, domain schemas, `/health` + `/system/info`, config, Docker/CI/docs | **Current** |
-| **Phase 1** | Symptom intake & deterministic doctor data: static/synthetic doctor dataset, doctor search service/endpoint, intake endpoint (no routing yet) | Planned |
+| **Phase 0** | Repository & engineering foundation: package skeleton, provider interfaces + fakes, domain schemas, `/health` + `/system/info`, config, Docker/CI/docs | Complete |
+| **Phase 0.2** | PostgreSQL persistence foundation: async SQLAlchemy engine/session, Alembic migrations, `/api/v1/health/readiness`, Compose `postgres` service — infrastructure only, no business tables | **Current** |
+| **Phase 1** | Symptom intake & deterministic doctor data: static/synthetic doctor dataset persisted via the Phase 0.2 foundation, doctor search service/endpoint, intake endpoint (no routing yet) | Planned |
 | **Phase 2** | LLM-backed routing: real `TextLLMProvider` (Groq), LangGraph intake→routing graph, safety subsystem (emergency keyword/escalation detection) | Planned |
 | **Phase 3** | Booking simulation: `BookingRequest` → `BookingConfirmation` end-to-end (still simulated, not real scheduling) | Planned |
 | **Phase 4** | Multimodal input: real `SpeechToTextProvider` (Deepgram) + `TextToSpeechProvider`, voice-based intake | Planned |
 | **Phase 5** | Frontend: React/TypeScript client consuming the FastAPI backend | Planned |
-| Later (unscheduled) | Persistence layer, authentication, deployment/hosting | Unscheduled |
+| Later (unscheduled) | Authentication, deployment/hosting | Unscheduled |
 
 ## 14. Coding standards
 
@@ -284,6 +303,12 @@ uv run pytest
   providers are wired up; only `fake` exists in Phase 0.
 - **Emergency escalation** — The (future) safety path that directs a user
   to emergency services instead of routine specialty routing.
+- **Liveness vs. readiness** — Liveness (`GET /health`) asks "is the
+  process running?" and ignores database state. Readiness
+  (`GET /api/v1/health/readiness`) asks "can this instance serve
+  database-backed requests right now?" and reflects PostgreSQL reachability.
+- **Alembic** — The migration tool that exclusively owns schema creation
+  and changes; the app itself never calls `Base.metadata.create_all()`.
 
 ---
 
