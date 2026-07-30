@@ -9,7 +9,10 @@ from alembic import context
 from app.config.settings import get_settings
 
 # Import every model module so Base.metadata is fully populated for autogenerate.
-from app.db import models  # noqa: F401
+from app.db import (
+    models,  # noqa: F401
+    nppes,  # noqa: F401
+)
 from app.db.base import Base
 
 # this is the Alembic Config object, which provides

@@ -81,7 +81,8 @@ directory, appointment slots, bookings).
 |---|---|---|
 | `api/` | HTTP surface — thin FastAPI routers, no business logic | 3 endpoints live |
 | `schemas/` | Pydantic v2 models — the contract between API, graph, and services | Fully defined |
-| `db/` | Async SQLAlchemy 2 foundation: declarative `Base`, engine/session lifecycle, readiness check | Infrastructure only — no business-domain tables yet |
+| `db/` | Async SQLAlchemy 2 foundation: declarative `Base`, engine/session lifecycle, readiness check, NPPES provider/location/taxonomy/ingestion-run models | Persistence foundation + NPPES schema |
+| `ingestion/` | NPPES CSV mapping, transformation/validation, chunked streaming upsert service, CLI (`python -m app.ingestion.nppes`) | Validated against a small fixture only — not the national dataset |
 | `graph/` | LangGraph state machine: intake → routing → doctor search → booking | Empty package, future milestone |
 | `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done, real integrations future |
 | `safety/` | Emergency escalation detection and disclaimers | Placeholder constants only |
@@ -92,6 +93,10 @@ directory, appointment slots, bookings).
 Schema migrations for `db/` live outside `app/`, under `backend/alembic/` —
 Alembic is the only mechanism that creates or changes tables; the app never
 calls `Base.metadata.create_all()`.
+
+NPPES is a public government provider-directory registry — real
+doctor/organization identities, not patient data — so ingesting it does not
+conflict with the synthetic-patient-data safety rule below.
 
 ## 4. Data flow (target, future milestones)
 
@@ -203,7 +208,8 @@ MedRoute-AI/
 │   │   │   ├── router.py            # aggregates v1 routes
 │   │   │   └── v1/{health,readiness,system}.py
 │   │   ├── schemas/                 # intake, routing, doctor, booking
-│   │   ├── db/                      # base, session (engine/sessionmaker), models
+│   │   ├── db/                      # base, session, models (health check + NPPES schema)
+│   │   ├── ingestion/                # nppes_mapping, nppes_transform, nppes_service, nppes CLI
 │   │   ├── providers/{llm,speech_to_text,text_to_speech}/{base,fake}.py
 │   │   ├── graph/                   # placeholder — future LangGraph graph
 │   │   ├── safety/constants.py      # disclaimer text, no logic yet
@@ -211,7 +217,8 @@ MedRoute-AI/
 │   │   └── tools/                   # placeholder — future LangGraph tools
 │   ├── alembic/                     # async env.py + versions/ (Alembic-owned schema)
 │   ├── alembic.ini                  # no embedded credentials — URL set by env.py
-│   ├── tests/                       # health, config, db, providers, schemas
+│   ├── tests/                       # health, config, db, nppes_transform, providers, schemas
+│   │   ├── fixtures/                # small synthetic NPPES CSV fixture
 │   │   └── integration/             # requires a real PostgreSQL, self-skips otherwise
 │   ├── pyproject.toml
 │   └── Dockerfile
@@ -272,8 +279,9 @@ uv run pytest
 | Phase | Scope | Status |
 |---|---|---|
 | **Phase 0** | Repository & engineering foundation: package skeleton, provider interfaces + fakes, domain schemas, `/health` + `/system/info`, config, Docker/CI/docs | Complete |
-| **Phase 0.2** | PostgreSQL persistence foundation: async SQLAlchemy engine/session, Alembic migrations, `/api/v1/health/readiness`, Compose `postgres` service — infrastructure only, no business tables | **Current** |
-| **Phase 1** | Symptom intake & deterministic doctor data: static/synthetic doctor dataset persisted via the Phase 0.2 foundation, doctor search service/endpoint, intake endpoint (no routing yet) | Planned |
+| **Phase 0.2** | PostgreSQL persistence foundation: async SQLAlchemy engine/session, Alembic migrations, `/api/v1/health/readiness`, Compose `postgres` service — infrastructure only, no business tables | Complete |
+| **Phase 1A** | NPPES provider-directory ingestion foundation: `providers`/`provider_locations`/`provider_taxonomies`/`ingestion_runs` schema, chunked streaming CSV ingestion, idempotent upserts, CLI import — validated against a small fixture, not the national dataset | **Current** |
+| **Phase 1B** | Symptom intake & doctor search: doctor search service/endpoint reading the Phase 1A schema, intake endpoint (no routing yet) | Planned |
 | **Phase 2** | LLM-backed routing: real `TextLLMProvider` (Groq), LangGraph intake→routing graph, safety subsystem (emergency keyword/escalation detection) | Planned |
 | **Phase 3** | Booking simulation: `BookingRequest` → `BookingConfirmation` end-to-end (still simulated, not real scheduling) | Planned |
 | **Phase 4** | Multimodal input: real `SpeechToTextProvider` (Deepgram) + `TextToSpeechProvider`, voice-based intake | Planned |
@@ -309,6 +317,13 @@ uv run pytest
   database-backed requests right now?" and reflects PostgreSQL reachability.
 - **Alembic** — The migration tool that exclusively owns schema creation
   and changes; the app itself never calls `Base.metadata.create_all()`.
+- **NPPES** — The National Plan and Provider Enumeration System, a public
+  U.S. government registry of healthcare provider identities (real
+  doctors/organizations, not patient data). Phase 1A ingests a small sample
+  of this format; the full national file is a later phase.
+- **Idempotent upsert** — Re-running the same ingestion file never creates
+  duplicate rows; matching records (by NPI, or by a natural key for
+  locations/taxonomies) are updated in place instead.
 
 ---
 

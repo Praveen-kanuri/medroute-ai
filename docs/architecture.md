@@ -18,10 +18,16 @@ future LangGraph routing graph. It is designed so LLM-backed intelligence
   LLM, speech-to-text, text-to-speech), each with a fake implementation
   for tests and local development, isolating vendor-specific code.
 - **db/** — Async SQLAlchemy 2 foundation: declarative `Base`, a lazily
-  created engine/session factory, a FastAPI session dependency, and a
-  `SELECT 1` readiness check. Infrastructure only in Phase 0.2 — no
-  business-domain tables. Alembic (`backend/alembic/`), not the app, owns
-  all schema creation and changes.
+  created engine/session factory, a FastAPI session dependency, a
+  `SELECT 1` readiness check (Phase 0.2), and the NPPES provider/location/
+  taxonomy/ingestion-run models (Phase 1A). Alembic (`backend/alembic/`),
+  not the app, owns all schema creation and changes.
+- **ingestion/** — NPPES CSV column mapping (`nppes_mapping.py`), pure
+  row transformation/validation (`nppes_transform.py`), chunked streaming
+  ingestion with idempotent upserts (`nppes_service.py`), and a CLI
+  (`nppes.py`, run via `python -m app.ingestion.nppes`). Validated against
+  a small fixture (`backend/tests/fixtures/nppes_sample.csv`) — not the
+  full national dataset, which is later phase work.
 - **safety/** — Emergency escalation detection and disclaimers. Placeholder
   in Phase 0; real logic is a dedicated future milestone.
 - **services/** — Business logic orchestrating schemas, providers, and the
@@ -63,11 +69,13 @@ recommendation → booking confirmation. The emergency-escalation branch
 [safety boundary](safety-design.md). Phase 0 ships none of this logic —
 only the schemas and package skeleton that will eventually host it.
 
-## Phase 0 / 0.2 scope
+## Phase 0 / 0.2 / 1A scope
 
 The package skeleton, abstract provider interfaces with fake
 implementations, domain schemas, configuration, and engineering tooling
 exist (Phase 0), plus an async SQLAlchemy/Alembic persistence foundation
-and a `GET /api/v1/health/readiness` endpoint (Phase 0.2). No graph
-wiring, no real provider calls, and no business-domain tables (doctors,
-specialties, locations, appointment slots) yet — those are Phase 1+.
+and a `GET /api/v1/health/readiness` endpoint (Phase 0.2), plus a
+normalized NPPES provider-directory schema and chunked, idempotent CSV
+ingestion validated against a small fixture (Phase 1A). No graph wiring,
+no real LLM/STT/TTS provider calls, no full national NPPES import, and no
+symptom-to-specialty routing yet — those are Phase 1B+.

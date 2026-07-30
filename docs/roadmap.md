@@ -23,11 +23,25 @@
 - Doctor/specialty/appointment persistence tables are explicitly out of
   scope here; they arrive in Phase 1 once that domain schema is defined.
 
-## Phase 1 — Symptom Intake & Deterministic Doctor Data (planned)
+## Phase 1A — NPPES Provider-Directory Ingestion Foundation (current)
 
-- Static/synthetic doctor and specialty dataset, persisted via the
-  Phase 0.2 database foundation.
-- Doctor search service and endpoint (deterministic, no LLM).
+- Normalized PostgreSQL schema for provider identity, locations, and
+  taxonomies (`providers`, `provider_locations`, `provider_taxonomies`),
+  plus `ingestion_runs` tracking — built on the Phase 0.2 async
+  SQLAlchemy/Alembic foundation.
+- NPPES is a public government provider-directory registry (real
+  doctor/organization identities, not patient data), so this does not
+  conflict with the project's synthetic-patient-data safety rule.
+- Chunked/streaming CSV transformation, validation, and idempotent
+  PostgreSQL upserts; a CLI import command; validated only against a
+  small representative fixture, not the full national dataset.
+- Full national NPPES import, Qdrant/vector search, and symptom-to-
+  specialty routing are explicitly out of scope here (Phase 1B+).
+
+## Phase 1B — Symptom Intake & Doctor Search (planned)
+
+- Doctor search service and endpoint reading the Phase 1A provider
+  schema (deterministic, no LLM).
 - Intake endpoint accepting `SymptomIntake`, no routing yet.
 
 ## Phase 2 — LLM-Backed Routing (planned)

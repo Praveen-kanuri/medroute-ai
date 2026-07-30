@@ -11,10 +11,11 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
-Phase 0.2: PostgreSQL persistence foundation (async SQLAlchemy engine,
-Alembic-managed migrations, database readiness check). No LLM integration,
-voice/image processing, business-domain tables (doctors, specialties,
-appointments), or real appointment logic yet.
+Phase 1A: NPPES provider-directory ingestion foundation (normalized
+provider/location/taxonomy schema, chunked CSV ingestion, idempotent
+upserts, CLI import — validated against a small fixture only, not the
+national dataset). No LLM integration, voice/image processing, Qdrant/vector
+search, symptom-to-specialty routing, or real appointment logic yet.
 
 ## Stack
 
@@ -123,12 +124,55 @@ uv run pytest -m integration
 uv run pytest
 ```
 
+## NPPES provider ingestion (Phase 1A)
+
+NPPES (the National Plan and Provider Enumeration System) is a public U.S.
+government registry of healthcare provider identities — real
+doctors/organizations, not patient data, so ingesting it does not conflict
+with this project's synthetic-patient-data rule.
+
+**Why chunked:** the national NPPES file has millions of rows. The importer
+streams the CSV with `csv.DictReader` (never loading the whole file into
+memory) and writes one bounded chunk per database transaction, so a bad
+chunk can't corrupt rows already committed by earlier chunks and no single
+transaction spans the whole file.
+
+**Why idempotent:** the same file (or an updated monthly file with
+overlapping providers) may be imported more than once. Providers are matched
+by NPI; locations and taxonomies are matched by natural keys
+(`provider_id` + address purpose / taxonomy code). Re-running never creates
+duplicates — matching rows are updated instead.
+
+**Run the small fixture import** (from `backend/`, with PostgreSQL migrated):
+
+```bash
+uv run python -m app.ingestion.nppes --file tests/fixtures/nppes_sample.csv --chunk-size 500
+```
+
+Prints only row counts and a status (`completed` / `partially_completed` /
+`failed`) — never a full file path, database URL, or credential. Re-running
+it is safe: counts will show updates instead of new inserts.
+
+**Run NPPES unit tests only** (fast, no PostgreSQL required):
+
+```bash
+uv run pytest tests/test_nppes_transform.py
+```
+
+**Run NPPES integration tests** (requires `docker compose up -d postgres`):
+
+```bash
+uv run pytest tests/integration/test_nppes_ingestion.py
+```
+
 ### What's deferred
 
-No business-domain tables exist yet (doctors, specialties, locations,
-appointment slots) — only a minimal infrastructure table used to prove the
-persistence stack end-to-end. Those arrive in Phase 1. NPPES ingestion,
-Qdrant/vector search, and routing intelligence are later phases still.
+Phase 1A ships the ingestion *foundation*, validated only against the small
+fixture above — **not** the full national NPPES dataset. Downloading and
+importing the complete national file is Phase 1B+ work. Qdrant/vector
+search and symptom-to-specialty routing are later phases still. NPPES also
+does not provide live appointment availability — that remains a separate,
+future concern.
 
 ## Validation
 

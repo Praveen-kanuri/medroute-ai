@@ -67,3 +67,51 @@ running application.
 > on internal documentation conflicts, the roadmap was updated first
 > (inserting Phase 0.2 ahead of Phase 1, infrastructure-only, persistence
 > line removed from "Later") before any code was written.
+
+### Phase 1A — NPPES provider ingestion foundation
+
+> Implement MedRoute AI Phase 1A: the structured NPPES provider-data
+> persistence schema and a reliable, chunked CSV ingestion foundation.
+> This phase must establish the normalized PostgreSQL schema, Alembic
+> migration, NPPES transformation logic, idempotent batch upserts,
+> ingestion tracking, CLI execution, and automated tests. Validate the
+> pipeline using a small representative test fixture. Do not download or
+> import the complete national NPPES dataset. Do not implement Qdrant,
+> embeddings, routing, chatbot integration, scheduling, authentication, or
+> frontend work. Design four tables: `providers` (NPI unique + 10-digit
+> format check, entity-type check for individual vs. organization),
+> `provider_locations` (mailing/practice addresses, natural key on
+> provider + address purpose), `provider_taxonomies` (specialty/license
+> assignments, natural key on provider + taxonomy code, supporting
+> multiple slots), and `ingestion_runs` (status, started/completed
+> timestamps, row counts, a bounded sanitized error summary — never a
+> full row dump or a private file path). Stream the CSV with
+> `csv.DictReader` in configurable chunks, one transaction per chunk, using
+> PostgreSQL-native `INSERT ... ON CONFLICT DO UPDATE` for idempotent
+> upserts. Never log or persist a full absolute input path — only the
+> basename. Never read, print, or touch the real root `.env` file.
+>
+> This prompt surfaced a conflict with `docs/roadmap.md`, whose Phase 1
+> entry described a "static/synthetic doctor and specialty dataset" with
+> no "Phase 1A"/"Phase 1B" split, while this task wanted real NPPES
+> ingestion positioned as the immediate next step. Per the same
+> stop-on-conflict rule applied in the Phase 0.2 prompt, the roadmap was
+> updated first — splitting Phase 1 into 1A (this ingestion foundation)
+> and 1B (doctor search/intake endpoints built on top) — before any code
+> was written. NPPES is a public government provider-directory registry
+> (real doctor/organization identities, not patient data), so ingesting it
+> does not conflict with the project's synthetic-patient-data safety rule.
+>
+> A design issue surfaced during test-writing and was fixed before
+> committing: the fixture's intentional "repeated provider row" (same NPI
+> appearing twice, to test upsert behavior) landed in the same processing
+> chunk as its original under the default chunk size, so in-memory
+> same-chunk de-duplication silently discarded the original row's second
+> taxonomy before it ever reached the database — correct behavior for a
+> true same-chunk duplicate, but it also revealed that insert/update
+> counts were computed only from de-duplicated NPIs, undercounting a
+> chunk's true row-for-row accounting. Fixed by counting insert-vs-update
+> per original row (before de-duplication) so `rows_inserted + rows_updated
+> == valid rows processed` always holds, and by using a smaller chunk size
+> in the relevant tests so the repeated row exercises a genuine cross-chunk
+> database update instead of an in-memory same-chunk overwrite.

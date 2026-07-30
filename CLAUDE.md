@@ -74,8 +74,9 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 0.2 — PostgreSQL persistence foundation (infrastructure only: async
-SQLAlchemy engine/session, Alembic migrations, readiness check). No LLM
-calls, no voice/image processing, no business-domain tables (doctors,
-specialties, appointments), no real appointment logic yet. See
-`docs/roadmap.md` for what comes next.
+Phase 1A — NPPES provider-directory ingestion foundation (normalized
+provider/location/taxonomy schema, chunked CSV ingestion, idempotent
+upserts, CLI import command, validated against a small fixture only — not
+the full national dataset). No LLM calls, no voice/image processing, no
+Qdrant/vector search, no symptom-to-specialty routing, no appointment
+logic yet. See `docs/roadmap.md` for what comes next.
