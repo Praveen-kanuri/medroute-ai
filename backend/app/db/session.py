@@ -58,12 +58,25 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def dispose_engine() -> None:
-    """Dispose the engine's connection pool. Call during application shutdown."""
+    """Dispose the engine's connection pool. Call during application shutdown.
+
+    Always clears the cached engine/sessionmaker first, then attempts to
+    dispose the pool — and never raises even if disposal itself fails (e.g.
+    closing pooled connections that belong to an event loop that has
+    already been torn down). Otherwise a failed disposal would either leave
+    a permanently broken engine cached for the rest of the process, or
+    crash an unrelated caller (e.g. a test fixture's teardown) over a
+    problem that disposal exists specifically to clean up after.
+    """
     global _engine, _sessionmaker
-    if _engine is not None:
-        await _engine.dispose()
+    engine = _engine
     _engine = None
     _sessionmaker = None
+    if engine is not None:
+        try:
+            await engine.dispose()
+        except (SQLAlchemyError, RuntimeError, OSError):
+            pass
 
 
 async def check_database_connection(settings: Settings | None = None) -> bool:

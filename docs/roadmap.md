@@ -23,7 +23,7 @@
 - Doctor/specialty/appointment persistence tables are explicitly out of
   scope here; they arrive in Phase 1 once that domain schema is defined.
 
-## Phase 1A — NPPES Provider-Directory Ingestion Foundation (current)
+## Phase 1A — NPPES Provider-Directory Ingestion Foundation (complete)
 
 - Normalized PostgreSQL schema for provider identity, locations, and
   taxonomies (`providers`, `provider_locations`, `provider_taxonomies`),
@@ -38,11 +38,24 @@
 - Full national NPPES import, Qdrant/vector search, and symptom-to-
   specialty routing are explicitly out of scope here (Phase 1B+).
 
-## Phase 1B — Symptom Intake & Doctor Search (planned)
+## Phase 1B — Deterministic Provider Discovery (current)
 
-- Doctor search service and endpoint reading the Phase 1A provider
-  schema (deterministic, no LLM).
-- Intake endpoint accepting `SymptomIntake`, no routing yet.
+- All 15 NPPES taxonomy slots parsed (up from 3 in Phase 1A).
+- A small, transparent specialty catalog mapping authoritative NUCC/CMS
+  taxonomy codes to MedRoute specialties (`specialties`,
+  `specialty_taxonomy_mappings`), seeded via a repeatable command.
+- Deterministic (no-LLM) provider search — `GET /api/v1/specialties` and
+  `GET /api/v1/providers/search` — with explainable ranking, pagination,
+  and a disclaimer that NPPES does not validate licensing, credentials,
+  quality, or appointment availability.
+- Symptom-to-specialty inference, Qdrant/vector search, and appointment
+  booking remain explicitly out of scope.
+
+## Phase 1C — Symptom Intake Endpoint (planned)
+
+- Intake endpoint accepting `SymptomIntake`, no routing yet — the
+  `SymptomIntake` bullet originally grouped into Phase 1B, split out
+  once Phase 1B's scope narrowed to provider discovery only.
 
 ## Phase 2 — LLM-Backed Routing (planned)
 

@@ -115,3 +115,66 @@ running application.
 > == valid rows processed` always holds, and by using a smaller chunk size
 > in the relevant tests so the repeated row exercises a genuine cross-chunk
 > database update instead of an in-memory same-chunk overwrite.
+
+### Phase 1B — Deterministic provider discovery and NPPES compatibility hardening
+
+> Implement MedRoute AI Phase 1B: deterministic provider discovery and
+> NPPES compatibility hardening. Expand NPPES taxonomy parsing from 3 to
+> all 15 official slots. Add a controlled specialty catalog mapped to
+> authoritative taxonomy codes. Implement asynchronous provider-search
+> repository and service layers. Expose deterministic specialty and
+> provider-search APIs. Rank results deterministically without an LLM.
+> Validate ingestion using fixtures and, when safely available, a bounded
+> sample from an official CMS weekly incremental NPPES file. Do not
+> implement full national ingestion, automated scheduling, Qdrant,
+> embeddings, symptom-to-specialty inference, LLM/Groq/LangChain/LangGraph
+> integration, chatbot behavior, appointment booking, voice/multimodal,
+> authentication, or frontend work.
+>
+> This prompt again surfaced a roadmap gap: `docs/roadmap.md`'s existing
+> Phase 1B bundled two deliverables — doctor search and a `SymptomIntake`
+> intake endpoint — but this task's scope only covered the first. Unlike
+> the two prior prompts, this one explicitly said not to silently rewrite
+> the roadmap again, so the gap was reported and the user was asked before
+> touching it; the resolution was to split Phase 1B (this task, provider
+> discovery only) from a new Phase 1C (the intake endpoint, deferred).
+>
+> **NUCC taxonomy source:** National Uniform Claim Committee (NUCC) Health
+> Care Provider Taxonomy Code Set, version 26.1 (effective 2026-07-01).
+> Ten codes were verified via
+> [nucc.org's v20.0 PDF](https://www.nucc.org/images/stories/PDF/Taxonomy_20_0.pdf),
+> [findacode.com's taxonomy list](https://www.findacode.com/tools/taxonomy-codes.html)
+> (citing "NUCC Provider Taxonomy version 26.1 7/1/2026"), and
+> [npiprofile.com](https://npiprofile.com/taxonomy/code/208600000X) for
+> General Surgery and Diagnostic Radiology specifically. Accessed
+> 2026-07-29. See `backend/app/catalog/nucc_specialties.py` for the full
+> cited list.
+>
+> **Real-file compatibility pilot:** the official CMS NPI Files page
+> (`https://download.cms.gov/nppes/NPI_Files.html`) was reachable, so the
+> latest weekly incremental NPPES V.2 file was downloaded
+> (`NPPES_Data_Dissemination_072026_072626_Weekly_V2.zip`, week
+> 2026-07-20–2026-07-26, ~6.9 MB) into the session's temporary scratchpad
+> directory — never the repository. The ZIP was validated
+> (`zipfile.is_zipfile`, `testzip()`, and a path-safety check rejecting any
+> member path containing `..` or an absolute path) before extracting only
+> the main `npidata_pfile_*.csv` member. A bounded sample (the header plus
+> the first 10,000 data rows) was ingested into a separate, throwaway
+> PostgreSQL database (`medroute_pilot_tmp`, created and dropped on the
+> same local Postgres server — never the app's own `medroute` dev
+> database) via the existing chunked ingestion service. Result: 10,000 rows
+> read, 9,950 inserted, 0 updated, 50 rejected (all for a blank Entity Type
+> Code — consistent with deactivated/legacy NPPES records, handled safely
+> rather than crashing the run), runtime ~196 seconds, ~26.7 MB peak
+> Python-tracked memory (`tracemalloc`). The pilot database was dropped and
+> the downloaded ZIP/CSV/sample were deleted from the scratchpad afterward;
+> no real provider data was persisted anywhere durable or committed.
+>
+> **Real compatibility bug the pilot caught:** the actual current NPPES
+> V.2 file header uses `"Provider Sex Code"`, not `"Provider Gender Code"`
+> as Phase 1A had assumed (verified by diffing the real file's header
+> against every mapped column name). Fixed in
+> `app/ingestion/nppes_mapping.py`; the synthetic fixture's header was
+> updated to match, and all existing tests continued to pass unchanged
+> since they reference the mapping module's named constant, not the
+> literal string.

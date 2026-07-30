@@ -170,13 +170,27 @@ def extract_addresses(row: Mapping[str, str]) -> tuple[NormalizedAddress, ...]:
     return tuple(address for address in (mailing, practice) if address is not None)
 
 
+def parse_primary_taxonomy_switch(value: str | None) -> bool:
+    """Interpret the NPPES "Primary Taxonomy Switch" column.
+
+    NPPES documents this column as Y/N. Deliberately: only an exact "Y"
+    (case-insensitive, trimmed) counts as primary. Blank, "N", "X", or any
+    other/unexpected value is treated as non-primary rather than raising —
+    a malformed switch value should not reject an otherwise-valid taxonomy
+    assignment.
+    """
+    text = blank_to_none(value)
+    return text is not None and text.upper() == "Y"
+
+
 def extract_taxonomies(
     row: Mapping[str, str], *, max_slots: int = col.MAX_TAXONOMY_SLOTS
 ) -> tuple[NormalizedTaxonomy, ...]:
-    """Extract every populated taxonomy slot, not just the first.
+    """Extract every populated taxonomy slot (1..max_slots), not just the first.
 
-    De-duplicates by taxonomy code (keeping the last slot) in case the same
-    code appears in more than one slot for a provider — the database's
+    Completely blank slots (no taxonomy code) are ignored. De-duplicates by
+    taxonomy code (keeping the last slot) in case the same code appears in
+    more than one slot for a provider — the database's
     (provider_id, taxonomy_code) natural key allows only one row per code.
     """
     by_code: dict[str, NormalizedTaxonomy] = {}
@@ -186,12 +200,12 @@ def extract_taxonomies(
             continue
         license_number = blank_to_none(row.get(col.taxonomy_license_number_column(slot)))
         license_state = normalize_state(row.get(col.taxonomy_license_state_column(slot)))
-        primary_switch = blank_to_none(row.get(col.taxonomy_primary_switch_column(slot)))
+        primary_switch = row.get(col.taxonomy_primary_switch_column(slot))
         by_code[code] = NormalizedTaxonomy(
             taxonomy_code=code,
             license_number=license_number,
             license_state=license_state,
-            is_primary=(primary_switch or "").upper() == "Y",
+            is_primary=parse_primary_taxonomy_switch(primary_switch),
         )
     return tuple(by_code.values())
 

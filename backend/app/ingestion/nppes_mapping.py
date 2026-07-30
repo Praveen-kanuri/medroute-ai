@@ -20,7 +20,10 @@ COL_MIDDLE_NAME = "Provider Middle Name"
 COL_NAME_PREFIX = "Provider Name Prefix Text"
 COL_NAME_SUFFIX = "Provider Name Suffix Text"
 COL_CREDENTIAL = "Provider Credential Text"
-COL_GENDER_CODE = "Provider Gender Code"
+# Verified against the current NPPES V.2 weekly incremental file (see
+# docs/prompts-used.md's Phase 1B pilot notes): the real column is
+# "Provider Sex Code", not "Provider Gender Code" as originally assumed.
+COL_GENDER_CODE = "Provider Sex Code"
 COL_ENUMERATION_DATE = "Provider Enumeration Date"
 COL_LAST_UPDATE_DATE = "Last Update Date"
 COL_DEACTIVATION_DATE = "NPI Deactivation Date"
@@ -55,10 +58,9 @@ COL_PRACTICE_COUNTRY_CODE = (
 COL_PRACTICE_TELEPHONE = "Provider Business Practice Location Address Telephone Number"
 COL_PRACTICE_FAX = "Provider Business Practice Location Address Fax Number"
 
-# Taxonomy slots. The real national file has 15 slots (_1.._15); Phase 1A
-# reads a smaller, documented, easily-extendable number of slots, validated
-# against the fixture rather than the full file.
-MAX_TAXONOMY_SLOTS = 3
+# Taxonomy slots. The national NPPES file has 15 slots (_1.._15); Phase 1B
+# reads all of them.
+MAX_TAXONOMY_SLOTS = 15
 
 
 def taxonomy_code_column(slot: int) -> str:

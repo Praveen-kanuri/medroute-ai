@@ -22,16 +22,27 @@ future LangGraph routing graph. It is designed so LLM-backed intelligence
   `SELECT 1` readiness check (Phase 0.2), and the NPPES provider/location/
   taxonomy/ingestion-run models (Phase 1A). Alembic (`backend/alembic/`),
   not the app, owns all schema creation and changes.
-- **ingestion/** — NPPES CSV column mapping (`nppes_mapping.py`), pure
-  row transformation/validation (`nppes_transform.py`), chunked streaming
-  ingestion with idempotent upserts (`nppes_service.py`), and a CLI
-  (`nppes.py`, run via `python -m app.ingestion.nppes`). Validated against
-  a small fixture (`backend/tests/fixtures/nppes_sample.csv`) — not the
-  full national dataset, which is later phase work.
+- **ingestion/** — NPPES CSV column mapping (`nppes_mapping.py`, all 15
+  taxonomy slots as of Phase 1B), pure row transformation/validation
+  (`nppes_transform.py`), chunked streaming ingestion with idempotent
+  upserts (`nppes_service.py`), and a CLI (`nppes.py`, run via
+  `python -m app.ingestion.nppes`). Validated against a small fixture
+  (`backend/tests/fixtures/nppes_sample.csv`) plus a bounded sample of a
+  real official file — not the full national dataset, which remains later
+  phase work.
+- **catalog/** — The small, transparent specialty catalog: sourced NUCC
+  taxonomy-code seed data (`nucc_specialties.py`) and an idempotent,
+  repeatable seeder (`seed_specialties.py`, run via
+  `python -m app.catalog.seed_specialties`).
+- **repositories/** — `provider_repository.py`: the single async query that
+  joins providers → taxonomies → specialty mappings → specialties →
+  locations, with window-function de-duplication so results never contain
+  duplicate providers.
+- **services/** — `provider_ranking.py` (pure, DB-free, deterministic sort)
+  and `provider_search_service.py` (orchestrates the repository, ranking,
+  and pagination). No LLM calls anywhere in this layer.
 - **safety/** — Emergency escalation detection and disclaimers. Placeholder
   in Phase 0; real logic is a dedicated future milestone.
-- **services/** — Business logic orchestrating schemas, providers, and the
-  graph. Empty in Phase 0.
 - **tools/** — LangGraph tool functions (e.g., doctor search). Empty in
   Phase 0.
 - **config/** — Environment-driven settings via pydantic-settings.
@@ -69,13 +80,15 @@ recommendation → booking confirmation. The emergency-escalation branch
 [safety boundary](safety-design.md). Phase 0 ships none of this logic —
 only the schemas and package skeleton that will eventually host it.
 
-## Phase 0 / 0.2 / 1A scope
+## Phase 0 / 0.2 / 1A / 1B scope
 
 The package skeleton, abstract provider interfaces with fake
 implementations, domain schemas, configuration, and engineering tooling
 exist (Phase 0), plus an async SQLAlchemy/Alembic persistence foundation
 and a `GET /api/v1/health/readiness` endpoint (Phase 0.2), plus a
 normalized NPPES provider-directory schema and chunked, idempotent CSV
-ingestion validated against a small fixture (Phase 1A). No graph wiring,
-no real LLM/STT/TTS provider calls, no full national NPPES import, and no
-symptom-to-specialty routing yet — those are Phase 1B+.
+ingestion (Phase 1A), plus a small specialty catalog and deterministic
+(no-LLM) provider search API with explainable ranking (Phase 1B). No graph
+wiring, no real LLM/STT/TTS provider calls, no full national NPPES
+import, no Qdrant/vector search, and no symptom-to-specialty inference
+yet — those are Phase 1C+.

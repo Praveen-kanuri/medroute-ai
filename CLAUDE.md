@@ -74,9 +74,9 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 1A — NPPES provider-directory ingestion foundation (normalized
-provider/location/taxonomy schema, chunked CSV ingestion, idempotent
-upserts, CLI import command, validated against a small fixture only — not
-the full national dataset). No LLM calls, no voice/image processing, no
-Qdrant/vector search, no symptom-to-specialty routing, no appointment
-logic yet. See `docs/roadmap.md` for what comes next.
+Phase 1B — deterministic provider discovery (all 15 NPPES taxonomy slots,
+a small transparent specialty catalog mapping NUCC/CMS taxonomy codes to
+specialties, deterministic no-LLM provider search with explainable ranking
+and pagination). No LLM calls, no voice/image processing, no Qdrant/vector
+search, no symptom-to-specialty inference, no appointment logic yet. See
+`docs/roadmap.md` for what comes next.

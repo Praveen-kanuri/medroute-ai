@@ -10,6 +10,7 @@ from app.ingestion.nppes_transform import (
     normalize_postal_code,
     normalize_state,
     parse_nppes_date,
+    parse_primary_taxonomy_switch,
     transform_row,
     validate_npi,
     validate_required_columns,
@@ -198,3 +199,55 @@ def test_extract_taxonomies_deduplicates_repeated_code_across_slots() -> None:
 
 def test_extract_taxonomies_empty_when_no_slots_populated() -> None:
     assert extract_taxonomies({}) == ()
+
+
+def test_max_taxonomy_slots_is_fifteen() -> None:
+    assert col.MAX_TAXONOMY_SLOTS == 15
+
+
+def test_extract_taxonomies_reads_slot_fifteen() -> None:
+    row = {
+        col.taxonomy_code_column(1): "261QM0801X",
+        col.taxonomy_primary_switch_column(1): "Y",
+        col.taxonomy_code_column(15): "208600000X",
+        col.taxonomy_license_number_column(15): "LIC-15",
+        col.taxonomy_license_state_column(15): "ny",
+        col.taxonomy_primary_switch_column(15): "N",
+    }
+    taxonomies = extract_taxonomies(row)
+    codes = {t.taxonomy_code for t in taxonomies}
+    assert codes == {"261QM0801X", "208600000X"}
+
+    slot_fifteen = next(t for t in taxonomies if t.taxonomy_code == "208600000X")
+    assert slot_fifteen.license_number == "LIC-15"
+    assert slot_fifteen.license_state == "NY"
+    assert slot_fifteen.is_primary is False
+
+
+def test_extract_taxonomies_ignores_completely_blank_slots_between_populated_ones() -> None:
+    # Slots 2..14 are entirely blank; only slots 1 and 15 are populated.
+    row = {
+        col.taxonomy_code_column(1): "207Q00000X",
+        col.taxonomy_primary_switch_column(1): "Y",
+        col.taxonomy_code_column(15): "208600000X",
+    }
+    taxonomies = extract_taxonomies(row)
+    assert len(taxonomies) == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Y", True),
+        ("y", True),
+        (" Y ", True),
+        ("N", False),
+        ("n", False),
+        ("X", False),
+        ("", False),
+        (None, False),
+        ("unexpected", False),
+    ],
+)
+def test_parse_primary_taxonomy_switch(value: str | None, expected: bool) -> None:
+    assert parse_primary_taxonomy_switch(value) is expected

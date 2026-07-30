@@ -12,6 +12,7 @@ from app.config.settings import get_settings
 from app.db import (
     models,  # noqa: F401
     nppes,  # noqa: F401
+    specialty,  # noqa: F401
 )
 from app.db.base import Base
 

@@ -81,12 +81,14 @@ directory, appointment slots, bookings).
 |---|---|---|
 | `api/` | HTTP surface — thin FastAPI routers, no business logic | 3 endpoints live |
 | `schemas/` | Pydantic v2 models — the contract between API, graph, and services | Fully defined |
-| `db/` | Async SQLAlchemy 2 foundation: declarative `Base`, engine/session lifecycle, readiness check, NPPES provider/location/taxonomy/ingestion-run models | Persistence foundation + NPPES schema |
-| `ingestion/` | NPPES CSV mapping, transformation/validation, chunked streaming upsert service, CLI (`python -m app.ingestion.nppes`) | Validated against a small fixture only — not the national dataset |
+| `db/` | Async SQLAlchemy 2 foundation: declarative `Base`, engine/session lifecycle, readiness check, NPPES provider/location/taxonomy/ingestion-run models, specialty catalog models | Persistence foundation + NPPES + specialty schema |
+| `ingestion/` | NPPES CSV mapping (all 15 taxonomy slots), transformation/validation, chunked streaming upsert service, CLI (`python -m app.ingestion.nppes`) | Validated against a small fixture + a bounded real-file pilot — not the national dataset |
+| `catalog/` | Sourced NUCC specialty seed data, idempotent seeder (`python -m app.catalog.seed_specialties`) | 10 specialties, small & transparent by design |
+| `repositories/` | Single async provider-search query (window-function deduplication, no N+1) | `provider_repository.py` |
+| `services/` | `provider_ranking.py` (pure, deterministic, DB-free) + `provider_search_service.py` (repository/ranking/pagination orchestration) | No LLM calls |
 | `graph/` | LangGraph state machine: intake → routing → doctor search → booking | Empty package, future milestone |
 | `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done, real integrations future |
 | `safety/` | Emergency escalation detection and disclaimers | Placeholder constants only |
-| `services/` | Business logic orchestrating schemas, providers, and the graph | Empty package, future milestone |
 | `tools/` | LangGraph tool functions (e.g., doctor search) | Empty package, future milestone |
 | `config/` | Environment-driven settings via pydantic-settings | Done |
 
@@ -155,6 +157,8 @@ Versioned under `/api/v1`, aggregated in `backend/app/api/router.py`.
 | `GET /health` | Liveness — is the process running? | Returns `{"status": "ok"}`; unaffected by database state |
 | `GET /api/v1/system/info` | App metadata | Returns `app_name`, `app_env`, `log_level` — **never** returns API keys or secrets |
 | `GET /api/v1/health/readiness` | Readiness — can this instance serve database-backed requests? | `SELECT 1` against PostgreSQL; 200 `{"status": "ready"}` or 503 `{"status": "unavailable"}` — **never** returns connection details |
+| `GET /api/v1/specialties` | List the active specialty catalog | Sorted by display name |
+| `GET /api/v1/providers/search` | Deterministic (no-LLM) provider search | Filters: specialty, taxonomy_code, state, city, postal_code, entity_type, name; paginated (`limit`/`offset`, max 100); always includes an NPPES disclaimer; zero matches → 200 with empty `results`, never an error |
 
 ## 8. Configuration
 
@@ -207,18 +211,20 @@ MedRoute-AI/
 │   │   ├── api/
 │   │   │   ├── router.py            # aggregates v1 routes
 │   │   │   └── v1/{health,readiness,system}.py
-│   │   ├── schemas/                 # intake, routing, doctor, booking
-│   │   ├── db/                      # base, session, models (health check + NPPES schema)
-│   │   ├── ingestion/                # nppes_mapping, nppes_transform, nppes_service, nppes CLI
+│   │   ├── schemas/                 # intake, routing, doctor, booking, provider_search
+│   │   ├── db/                      # base, session, models, nppes, specialty
+│   │   ├── ingestion/                # nppes_mapping (15 slots), nppes_transform, nppes_service, CLI
+│   │   ├── catalog/                  # nucc_specialties (sourced seed data), seed_specialties CLI
+│   │   ├── repositories/             # provider_repository (async search query)
 │   │   ├── providers/{llm,speech_to_text,text_to_speech}/{base,fake}.py
 │   │   ├── graph/                   # placeholder — future LangGraph graph
 │   │   ├── safety/constants.py      # disclaimer text, no logic yet
-│   │   ├── services/                # placeholder — future business logic
+│   │   ├── services/                 # provider_ranking (pure), provider_search_service
 │   │   └── tools/                   # placeholder — future LangGraph tools
 │   ├── alembic/                     # async env.py + versions/ (Alembic-owned schema)
 │   ├── alembic.ini                  # no embedded credentials — URL set by env.py
-│   ├── tests/                       # health, config, db, nppes_transform, providers, schemas
-│   │   ├── fixtures/                # small synthetic NPPES CSV fixture
+│   ├── tests/                       # health, config, db, nppes_transform, ranking, providers, schemas
+│   │   ├── fixtures/                # small synthetic NPPES CSV fixture (all 15 taxonomy slots)
 │   │   └── integration/             # requires a real PostgreSQL, self-skips otherwise
 │   ├── pyproject.toml
 │   └── Dockerfile
@@ -280,8 +286,9 @@ uv run pytest
 |---|---|---|
 | **Phase 0** | Repository & engineering foundation: package skeleton, provider interfaces + fakes, domain schemas, `/health` + `/system/info`, config, Docker/CI/docs | Complete |
 | **Phase 0.2** | PostgreSQL persistence foundation: async SQLAlchemy engine/session, Alembic migrations, `/api/v1/health/readiness`, Compose `postgres` service — infrastructure only, no business tables | Complete |
-| **Phase 1A** | NPPES provider-directory ingestion foundation: `providers`/`provider_locations`/`provider_taxonomies`/`ingestion_runs` schema, chunked streaming CSV ingestion, idempotent upserts, CLI import — validated against a small fixture, not the national dataset | **Current** |
-| **Phase 1B** | Symptom intake & doctor search: doctor search service/endpoint reading the Phase 1A schema, intake endpoint (no routing yet) | Planned |
+| **Phase 1A** | NPPES provider-directory ingestion foundation: `providers`/`provider_locations`/`provider_taxonomies`/`ingestion_runs` schema, chunked streaming CSV ingestion, idempotent upserts, CLI import — validated against a small fixture, not the national dataset | Complete |
+| **Phase 1B** | Deterministic provider discovery: all 15 NPPES taxonomy slots, a small NUCC-sourced specialty catalog, `GET /api/v1/specialties` + `GET /api/v1/providers/search` with explainable no-LLM ranking and pagination — validated against a fixture and a bounded real-file pilot | **Current** |
+| **Phase 1C** | Symptom intake endpoint accepting `SymptomIntake`, no routing yet (split out of what was originally bundled into Phase 1B) | Planned |
 | **Phase 2** | LLM-backed routing: real `TextLLMProvider` (Groq), LangGraph intake→routing graph, safety subsystem (emergency keyword/escalation detection) | Planned |
 | **Phase 3** | Booking simulation: `BookingRequest` → `BookingConfirmation` end-to-end (still simulated, not real scheduling) | Planned |
 | **Phase 4** | Multimodal input: real `SpeechToTextProvider` (Deepgram) + `TextToSpeechProvider`, voice-based intake | Planned |
@@ -319,11 +326,16 @@ uv run pytest
   and changes; the app itself never calls `Base.metadata.create_all()`.
 - **NPPES** — The National Plan and Provider Enumeration System, a public
   U.S. government registry of healthcare provider identities (real
-  doctors/organizations, not patient data). Phase 1A ingests a small sample
-  of this format; the full national file is a later phase.
+  doctors/organizations, not patient data). MedRoute ingests a small
+  fixture plus a bounded real-file pilot sample; the full national file
+  remains a later phase.
 - **Idempotent upsert** — Re-running the same ingestion file never creates
   duplicate rows; matching records (by NPI, or by a natural key for
   locations/taxonomies) are updated in place instead.
+- **NUCC** — The National Uniform Claim Committee, publisher of the
+  Health Care Provider Taxonomy Code Set MedRoute's specialty catalog maps
+  to. See `app/catalog/nucc_specialties.py` for the exact codes, version,
+  and access date.
 
 ---
 

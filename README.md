@@ -11,11 +11,12 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
-Phase 1A: NPPES provider-directory ingestion foundation (normalized
-provider/location/taxonomy schema, chunked CSV ingestion, idempotent
-upserts, CLI import — validated against a small fixture only, not the
-national dataset). No LLM integration, voice/image processing, Qdrant/vector
-search, symptom-to-specialty routing, or real appointment logic yet.
+Phase 1B: deterministic provider discovery (all 15 NPPES taxonomy slots, a
+small transparent specialty catalog, a no-LLM provider search API with
+explainable ranking and pagination — validated against a small fixture and
+a bounded sample of a real official file, not the national dataset). No
+LLM integration, voice/image processing, Qdrant/vector search,
+symptom-to-specialty inference, or real appointment logic yet.
 
 ## Stack
 
@@ -124,7 +125,40 @@ uv run pytest -m integration
 uv run pytest
 ```
 
+## Deterministic provider search (Phase 1B)
+
+`GET /api/v1/specialties` lists the small, curated specialty catalog
+(sourced from the NUCC taxonomy code set — see
+[docs/prompts-used.md](docs/prompts-used.md) for the exact version/access
+date). `GET /api/v1/providers/search` searches ingested NPPES providers by
+specialty slug, taxonomy code, state, city, postal code, entity type, and
+name, with pagination (`limit`, `offset`) and a stable, explainable
+ranking (no LLM, no randomness): exact specialty match, primary taxonomy
+first, exact postal/city/state match, active providers first, then a
+stable name/NPI tie-break.
+
+**Seed the specialty catalog** (idempotent — safe to run repeatedly, from
+`backend/`, with PostgreSQL migrated):
+
+```bash
+uv run python -m app.catalog.seed_specialties
+```
+
+**Example request** (synthetic data only):
+
+```bash
+curl "http://localhost:8000/api/v1/providers/search?specialty=cardiology&state=TX&city=Dallas&limit=20"
+```
+
+Every response includes a `disclaimer` field: NPPES inclusion does not
+verify licensing, credentials, quality of care, or appointment
+availability.
+
 ## NPPES provider ingestion (Phase 1A)
+
+All 15 official NPPES taxonomy slots are parsed as of Phase 1B (Phase 1A
+originally read only 3, as a documented, easily-extendable starting
+point).
 
 NPPES (the National Plan and Provider Enumeration System) is a public U.S.
 government registry of healthcare provider identities — real
@@ -159,20 +193,32 @@ it is safe: counts will show updates instead of new inserts.
 uv run pytest tests/test_nppes_transform.py
 ```
 
-**Run NPPES integration tests** (requires `docker compose up -d postgres`):
+**Run NPPES and provider-search integration tests** (requires
+`docker compose up -d postgres`):
 
 ```bash
-uv run pytest tests/integration/test_nppes_ingestion.py
+uv run pytest tests/integration/test_nppes_ingestion.py tests/integration/test_provider_search.py
 ```
+
+### Real weekly-file pilot (manual, not part of the automated test suite)
+
+Phase 1B was additionally validated against a bounded sample (first 10,000
+rows) of a real official CMS weekly incremental NPPES V.2 file, run against
+a separate throwaway PostgreSQL database (created and dropped for the
+pilot only — never the app's own dev database). This is a manual
+validation step, not something CI or `pytest` runs automatically, and it
+never downloads the full national file or writes real provider data to
+any persistent database. See docs/prompts-used.md for the exact source
+file, results, and a compatibility fix it surfaced (a real column-name
+difference from what Phase 1A had assumed).
 
 ### What's deferred
 
-Phase 1A ships the ingestion *foundation*, validated only against the small
-fixture above — **not** the full national NPPES dataset. Downloading and
-importing the complete national file is Phase 1B+ work. Qdrant/vector
-search and symptom-to-specialty routing are later phases still. NPPES also
-does not provide live appointment availability — that remains a separate,
-future concern.
+No full national NPPES import (monthly or weekly-cumulative) and no
+automated/scheduled ingestion — only the small fixture and a manual,
+bounded real-file pilot. Qdrant/vector search and symptom-to-specialty
+inference are later phases still. NPPES also does not provide live
+appointment availability — that remains a separate, future concern.
 
 ## Validation
 
