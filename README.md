@@ -11,12 +11,14 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
-Phase 1B: deterministic provider discovery (all 15 NPPES taxonomy slots, a
-small transparent specialty catalog, a no-LLM provider search API with
-explainable ranking and pagination — validated against a small fixture and
-a bounded sample of a real official file, not the national dataset). No
-LLM integration, voice/image processing, Qdrant/vector search,
-symptom-to-specialty inference, or real appointment logic yet.
+Phase 1C: multimodal intake foundation. A stateless
+`POST /api/v1/intake/validate` endpoint validates and normalizes text
+symptoms, a pre-generated voice transcript, and image/video URL
+references, records which modalities were supplied, and returns a
+deterministic `emergency` / `needs_clarification` /
+`ready_for_multimodal_processing` state. No speech-to-text, text-to-speech,
+vision analysis, LLM calls, specialty inference, or persistence happen
+here — see [Multimodal intake](#multimodal-intake-phase-1c) below.
 
 ## Stack
 
@@ -219,6 +221,76 @@ automated/scheduled ingestion — only the small fixture and a manual,
 bounded real-file pilot. Qdrant/vector search and symptom-to-specialty
 inference are later phases still. NPPES also does not provide live
 appointment availability — that remains a separate, future concern.
+
+## Multimodal intake (Phase 1C)
+
+**MedRoute AI does not diagnose conditions, recommend treatment, or
+autonomously determine emergencies.** `POST /api/v1/intake/validate` is a
+stateless validation/normalization contract only:
+
+- **Media URLs are references only.** Image and video URLs are validated
+  as strings (HTTPS, no embedded credentials, no localhost/private-IP-
+  literal hosts, no fragment, no query string) but are **never fetched,
+  opened, or analyzed** in Phase 1C. This is contract-level hardening, not
+  a complete SSRF defense — a future media-processing service must
+  independently revalidate destinations at fetch time.
+- **The voice transcript must already exist.** `voice_input.transcript` is
+  text the *caller* generated; this endpoint performs no speech-to-text
+  and does not verify the transcript's accuracy.
+- **No interpretation occurs in Phase 1C.** No LLM call, no vision-model
+  call, no symptom-to-specialty inference, no urgency scoring.
+- **Emergency indicators are user-declared only** (`emergency_concern`,
+  `emergency_signals`) — never inferred from text, transcript, or media.
+  A declared emergency always takes precedence and directs U.S. users to
+  call 911 ([911.gov](https://www.911.gov/calling-911)); **MedRoute AI
+  does not provide emergency assistance itself.**
+- **Stateless and non-persistent.** No database table, no cache, nothing
+  saved. The `intake_id` is generated per request and never stored.
+- **Privacy-conscious logging.** Only safe operational metadata is logged
+  (intake_id, status, per-modality booleans/counts, whether
+  duration/location were supplied, processing time) — never symptom text,
+  main_concern, transcripts, emergency-signal values, or media URLs. No
+  HIPAA-compliance claim is made; see the [HHS minimum-necessary
+  guidance](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/minimum-necessary-requirement/)
+  this logging approach follows in spirit.
+- **Do not submit identifying information** (name, date of birth, phone,
+  email, SSN, insurance ID, medical-record ID, payment details, or other
+  government identifiers) — this endpoint does not attempt to detect or
+  redact such data.
+
+**Example request** (synthetic data only):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/intake/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symptoms": ["persistent knee discomfort", "swelling"],
+    "main_concern": "Discomfort after routine exercise",
+    "duration": {"value": 3, "unit": "days"},
+    "location": {"city": "Dallas", "state": "TX", "postal_code": "75201"},
+    "vision_inputs": {"image_urls": ["https://media.example.org/intake/example-image.jpg"]}
+  }'
+```
+
+**Run intake tests:**
+
+```bash
+uv run pytest tests/test_multimodal_intake_schema.py tests/test_multimodal_intake_service.py tests/test_multimodal_intake_api.py
+```
+
+**Phase 1D handoff (documented, not implemented):** Phase 1D may add an
+LLM-provider abstraction, real text/vision understanding, non-diagnostic
+visual description, controlled specialty mapping, and deterministic
+provider-search orchestration on top of this contract and Phase 1B —
+still without diagnosis, differential diagnosis, treatment instructions,
+medical-certainty claims, autonomous emergency determination, or direct
+trust in unvalidated model output. See
+[docs/architecture.md](docs/architecture.md) for the full handoff notes.
+Real speech-to-text/text-to-speech (Phase 4) and the frontend (Phase 5)
+remain later milestones. See the [FDA's clinical decision support
+guidance](https://www.fda.gov/regulatory-information/search-fda-guidance-documents/clinical-decision-support-software)
+for the kind of software category MedRoute AI is deliberately staying out
+of.
 
 ## Validation
 

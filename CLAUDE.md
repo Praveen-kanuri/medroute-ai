@@ -35,9 +35,10 @@ backend/app/
     llm/                TextLLMProvider
     speech_to_text/      SpeechToTextProvider
     text_to_speech/      TextToSpeechProvider
-  safety/         Emergency escalation & disclaimer logic (future milestone)
-  schemas/        Pydantic v2 domain models (intake, routing, doctor, booking)
-  services/       Business logic orchestration (future milestone)
+  safety/         Emergency disclaimers + user-declared emergency constants
+  schemas/        Pydantic v2 domain models (intake, multimodal_intake, routing,
+                    doctor, booking, provider_search)
+  services/       Pure business logic (provider ranking/search, multimodal intake)
   tools/          LangGraph tool implementations (future milestone)
   main.py         FastAPI app factory
 ```
@@ -74,9 +75,13 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 1B — deterministic provider discovery (all 15 NPPES taxonomy slots,
-a small transparent specialty catalog mapping NUCC/CMS taxonomy codes to
-specialties, deterministic no-LLM provider search with explainable ranking
-and pagination). No LLM calls, no voice/image processing, no Qdrant/vector
-search, no symptom-to-specialty inference, no appointment logic yet. See
-`docs/roadmap.md` for what comes next.
+Phase 1C — multimodal intake foundation. A stateless
+`POST /api/v1/intake/validate` endpoint accepts and normalizes text
+symptoms, a pre-generated voice transcript, and image/video URL
+references, records which modalities were supplied, and evaluates a
+deterministic `emergency` / `needs_clarification` /
+`ready_for_multimodal_processing` state — with no interpretation: no
+speech-to-text, no vision analysis, no LLM calls, no specialty inference,
+and nothing persisted. Emergency indicators are user-declared only, never
+inferred. See `docs/roadmap.md` for what comes next (Phase 1D adds actual
+model-based interpretation on top of this contract).

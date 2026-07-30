@@ -38,11 +38,14 @@ future LangGraph routing graph. It is designed so LLM-backed intelligence
   joins providers → taxonomies → specialty mappings → specialties →
   locations, with window-function de-duplication so results never contain
   duplicate providers.
-- **services/** — `provider_ranking.py` (pure, DB-free, deterministic sort)
-  and `provider_search_service.py` (orchestrates the repository, ranking,
-  and pagination). No LLM calls anywhere in this layer.
-- **safety/** — Emergency escalation detection and disclaimers. Placeholder
-  in Phase 0; real logic is a dedicated future milestone.
+- **services/** — `provider_ranking.py` (pure, DB-free, deterministic sort),
+  `provider_search_service.py` (orchestrates the repository, ranking, and
+  pagination), and `multimodal_intake_service.py` (pure evaluation of a
+  Phase 1C intake request into a deterministic state — no DB, no network,
+  no model calls). No LLM calls anywhere in this layer.
+- **safety/** — Disclaimer text and user-declared emergency messaging
+  (`app/safety/constants.py`). Autonomous/inferred emergency detection
+  from free text or media remains a dedicated future milestone.
 - **tools/** — LangGraph tool functions (e.g., doctor search). Empty in
   Phase 0.
 - **config/** — Environment-driven settings via pydantic-settings.
@@ -80,7 +83,58 @@ recommendation → booking confirmation. The emergency-escalation branch
 [safety boundary](safety-design.md). Phase 0 ships none of this logic —
 only the schemas and package skeleton that will eventually host it.
 
-## Phase 0 / 0.2 / 1A / 1B scope
+## Phase 1C: multimodal intake contract
+
+`POST /api/v1/intake/validate` (`app/api/v1/intake.py`) is stateless and
+non-diagnostic. It accepts text (symptoms, main concern), a *pre-generated*
+voice transcript, and image/video URL *references*, plus a
+user-declared emergency flag/signal list and an optional preferred-specialty
+slug (format-validated only — no catalog lookup, keeping the endpoint
+decoupled from the Phase 1B provider-search database entirely).
+
+It validates and normalizes input (`app/schemas/multimodal_intake.py`),
+records which modalities were supplied, and evaluates one of three
+deterministic states (`app/services/multimodal_intake_service.py`) with
+explicit precedence:
+
+1. `emergency` — a user-declared `emergency_concern` or any
+   `emergency_signals` entry. Always wins, regardless of what else was
+   supplied; directs U.S. users to call 911 and does not continue to
+   media processing, specialty routing, or provider search.
+2. `needs_clarification` — no emergency, and either no concern modality
+   (symptoms/main_concern/transcript/image/video) or no duration was
+   supplied. Returns fixed, deterministic clarification questions.
+3. `ready_for_multimodal_processing` — no emergency, at least one concern
+   modality present, duration present. Means only that the request is
+   *structurally* ready for Phase 1D — not that it has been medically
+   assessed.
+
+Nothing is persisted (no database table, no Alembic migration, no cache);
+media URLs are validated as strings only and are **never fetched, opened,
+or probed** — the URL rules (HTTPS-only, no credentials/localhost/private-
+IP-literal hosts, no fragment, no query string) are contract-level
+hardening, not a complete SSRF defense, since Phase 1C never makes the
+outbound request in the first place. A future media-processing service
+must independently revalidate destinations at fetch time. Logging is
+restricted to safe operational metadata (intake_id, status, per-modality
+booleans/counts, whether duration/location were supplied, processing
+time) — never symptom text, transcripts, emergency-signal values, or
+media URLs.
+
+### Phase 1D handoff (documented, not implemented)
+
+Phase 1D may add: an LLM-provider abstraction and real text understanding,
+vision-model processing producing a non-diagnostic visual description,
+controlled specialty mapping, deterministic provider-search orchestration
+on top of Phase 1B, model-output validation, safety guardrails, and
+model-evaluation fixtures. It must still never diagnose, offer a
+differential diagnosis, give treatment instructions, claim medical
+certainty, infer an emergency autonomously, trust unvalidated model output
+directly, or claim that visual interpretation replaces a clinical
+examination. Real speech-to-text/text-to-speech (Phase 4) and the frontend
+(Phase 5) remain separate, later milestones.
+
+## Phase 0 / 0.2 / 1A / 1B / 1C scope
 
 The package skeleton, abstract provider interfaces with fake
 implementations, domain schemas, configuration, and engineering tooling
@@ -88,7 +142,8 @@ exist (Phase 0), plus an async SQLAlchemy/Alembic persistence foundation
 and a `GET /api/v1/health/readiness` endpoint (Phase 0.2), plus a
 normalized NPPES provider-directory schema and chunked, idempotent CSV
 ingestion (Phase 1A), plus a small specialty catalog and deterministic
-(no-LLM) provider search API with explainable ranking (Phase 1B). No graph
-wiring, no real LLM/STT/TTS provider calls, no full national NPPES
-import, no Qdrant/vector search, and no symptom-to-specialty inference
-yet — those are Phase 1C+.
+(no-LLM) provider search API with explainable ranking (Phase 1B), plus a
+stateless multimodal intake validation contract with no interpretation
+(Phase 1C). No graph wiring, no real LLM/STT/TTS provider calls, no full
+national NPPES import, no Qdrant/vector search, and no symptom-to-specialty
+inference yet — those are Phase 1D+.

@@ -51,11 +51,22 @@
 - Symptom-to-specialty inference, Qdrant/vector search, and appointment
   booking remain explicitly out of scope.
 
-## Phase 1C — Symptom Intake Endpoint (planned)
+## Phase 1C — Multimodal Intake Foundation (current)
 
-- Intake endpoint accepting `SymptomIntake`, no routing yet — the
-  `SymptomIntake` bullet originally grouped into Phase 1B, split out
-  once Phase 1B's scope narrowed to provider discovery only.
+- Product direction corrected: MedRoute AI is a multimodal assistant, not
+  a text-only symptom checker. This supersedes the earlier "Symptom Intake
+  Endpoint" plan for Phase 1C.
+- `POST /api/v1/intake/validate` — a stateless, non-diagnostic intake
+  contract accepting text (symptoms, main concern), a pre-generated voice
+  transcript, and image/video URL references, plus user-declared
+  emergency signals and an optional preferred-specialty slug.
+- Validates and normalizes input, records which modalities were supplied,
+  and evaluates a deterministic state (`emergency` /
+  `needs_clarification` / `ready_for_multimodal_processing`) with
+  user-declared emergency taking precedence over everything else.
+- Does not interpret media, transcribe audio, synthesize speech, call any
+  model/LLM/vision provider, infer a specialty, or persist anything —
+  those are Phase 1D+ (see docs/architecture.md's Phase 1D handoff notes).
 
 ## Phase 2 — LLM-Backed Routing (planned)
 

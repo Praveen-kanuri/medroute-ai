@@ -85,10 +85,10 @@ directory, appointment slots, bookings).
 | `ingestion/` | NPPES CSV mapping (all 15 taxonomy slots), transformation/validation, chunked streaming upsert service, CLI (`python -m app.ingestion.nppes`) | Validated against a small fixture + a bounded real-file pilot — not the national dataset |
 | `catalog/` | Sourced NUCC specialty seed data, idempotent seeder (`python -m app.catalog.seed_specialties`) | 10 specialties, small & transparent by design |
 | `repositories/` | Single async provider-search query (window-function deduplication, no N+1) | `provider_repository.py` |
-| `services/` | `provider_ranking.py` (pure, deterministic, DB-free) + `provider_search_service.py` (repository/ranking/pagination orchestration) | No LLM calls |
+| `services/` | `provider_ranking.py` + `provider_search_service.py` (Phase 1B) and `multimodal_intake_service.py` — pure evaluation of a Phase 1C intake request, no DB/network/model calls | No LLM calls anywhere in this layer |
 | `graph/` | LangGraph state machine: intake → routing → doctor search → booking | Empty package, future milestone |
 | `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done, real integrations future |
-| `safety/` | Emergency escalation detection and disclaimers | Placeholder constants only |
+| `safety/` | Disclaimer text + user-declared emergency messaging | Autonomous/inferred emergency detection remains future work |
 | `tools/` | LangGraph tool functions (e.g., doctor search) | Empty package, future milestone |
 | `config/` | Environment-driven settings via pydantic-settings | Done |
 
@@ -159,6 +159,7 @@ Versioned under `/api/v1`, aggregated in `backend/app/api/router.py`.
 | `GET /api/v1/health/readiness` | Readiness — can this instance serve database-backed requests? | `SELECT 1` against PostgreSQL; 200 `{"status": "ready"}` or 503 `{"status": "unavailable"}` — **never** returns connection details |
 | `GET /api/v1/specialties` | List the active specialty catalog | Sorted by display name |
 | `GET /api/v1/providers/search` | Deterministic (no-LLM) provider search | Filters: specialty, taxonomy_code, state, city, postal_code, entity_type, name; paginated (`limit`/`offset`, max 100); always includes an NPPES disclaimer; zero matches → 200 with empty `results`, never an error |
+| `POST /api/v1/intake/validate` | Stateless, non-diagnostic multimodal intake validation | Accepts text/voice-transcript/image-video-URL-references; returns `emergency` / `needs_clarification` / `ready_for_multimodal_processing`; nothing persisted; media URLs never fetched; unknown fields → 422 |
 
 ## 8. Configuration
 
@@ -210,20 +211,20 @@ MedRoute-AI/
 │   │   ├── config/settings.py       # pydantic-settings config
 │   │   ├── api/
 │   │   │   ├── router.py            # aggregates v1 routes
-│   │   │   └── v1/{health,readiness,system}.py
-│   │   ├── schemas/                 # intake, routing, doctor, booking, provider_search
+│   │   │   └── v1/{health,readiness,system,specialties,providers,intake}.py
+│   │   ├── schemas/                 # intake, multimodal_intake, routing, doctor, booking, provider_search
 │   │   ├── db/                      # base, session, models, nppes, specialty
 │   │   ├── ingestion/                # nppes_mapping (15 slots), nppes_transform, nppes_service, CLI
 │   │   ├── catalog/                  # nucc_specialties (sourced seed data), seed_specialties CLI
 │   │   ├── repositories/             # provider_repository (async search query)
 │   │   ├── providers/{llm,speech_to_text,text_to_speech}/{base,fake}.py
 │   │   ├── graph/                   # placeholder — future LangGraph graph
-│   │   ├── safety/constants.py      # disclaimer text, no logic yet
-│   │   ├── services/                 # provider_ranking (pure), provider_search_service
+│   │   ├── safety/constants.py      # disclaimers + user-declared emergency messages
+│   │   ├── services/                 # provider_ranking, provider_search_service, multimodal_intake_service
 │   │   └── tools/                   # placeholder — future LangGraph tools
 │   ├── alembic/                     # async env.py + versions/ (Alembic-owned schema)
 │   ├── alembic.ini                  # no embedded credentials — URL set by env.py
-│   ├── tests/                       # health, config, db, nppes_transform, ranking, providers, schemas
+│   ├── tests/                       # health, config, db, nppes, ranking, intake, providers, schemas
 │   │   ├── fixtures/                # small synthetic NPPES CSV fixture (all 15 taxonomy slots)
 │   │   └── integration/             # requires a real PostgreSQL, self-skips otherwise
 │   ├── pyproject.toml
@@ -287,8 +288,9 @@ uv run pytest
 | **Phase 0** | Repository & engineering foundation: package skeleton, provider interfaces + fakes, domain schemas, `/health` + `/system/info`, config, Docker/CI/docs | Complete |
 | **Phase 0.2** | PostgreSQL persistence foundation: async SQLAlchemy engine/session, Alembic migrations, `/api/v1/health/readiness`, Compose `postgres` service — infrastructure only, no business tables | Complete |
 | **Phase 1A** | NPPES provider-directory ingestion foundation: `providers`/`provider_locations`/`provider_taxonomies`/`ingestion_runs` schema, chunked streaming CSV ingestion, idempotent upserts, CLI import — validated against a small fixture, not the national dataset | Complete |
-| **Phase 1B** | Deterministic provider discovery: all 15 NPPES taxonomy slots, a small NUCC-sourced specialty catalog, `GET /api/v1/specialties` + `GET /api/v1/providers/search` with explainable no-LLM ranking and pagination — validated against a fixture and a bounded real-file pilot | **Current** |
-| **Phase 1C** | Symptom intake endpoint accepting `SymptomIntake`, no routing yet (split out of what was originally bundled into Phase 1B) | Planned |
+| **Phase 1B** | Deterministic provider discovery: all 15 NPPES taxonomy slots, a small NUCC-sourced specialty catalog, `GET /api/v1/specialties` + `GET /api/v1/providers/search` with explainable no-LLM ranking and pagination — validated against a fixture and a bounded real-file pilot | Complete |
+| **Phase 1C** | Multimodal intake foundation: stateless `POST /api/v1/intake/validate` accepting text/voice-transcript/image-video-URL-references, user-declared emergency precedence, deterministic `emergency`/`needs_clarification`/`ready_for_multimodal_processing` states — no interpretation, no persistence | **Current** |
+| **Phase 1D** | (Documented, not implemented) Model-provider abstraction, LLM text understanding, vision-model processing, controlled specialty mapping on top of Phase 1B/1C, model-output validation, safety guardrails | Planned |
 | **Phase 2** | LLM-backed routing: real `TextLLMProvider` (Groq), LangGraph intake→routing graph, safety subsystem (emergency keyword/escalation detection) | Planned |
 | **Phase 3** | Booking simulation: `BookingRequest` → `BookingConfirmation` end-to-end (still simulated, not real scheduling) | Planned |
 | **Phase 4** | Multimodal input: real `SpeechToTextProvider` (Deepgram) + `TextToSpeechProvider`, voice-based intake | Planned |
@@ -316,8 +318,17 @@ uv run pytest
   (LLM/STT/TTS), used so the app runs fully offline with no credentials.
 - **PROVIDER_MODE** — Config flag controlling whether fake or real
   providers are wired up; only `fake` exists in Phase 0.
-- **Emergency escalation** — The (future) safety path that directs a user
-  to emergency services instead of routine specialty routing.
+- **Emergency escalation** — The safety path that directs a user to
+  emergency services instead of routine specialty routing. As of
+  Phase 1C, triggered only by a **user-declared** `emergency_concern` flag
+  or `emergency_signals` entry (`POST /api/v1/intake/validate`) — never
+  inferred from text, a transcript, or media. Autonomous/inferred
+  detection remains future work.
+- **Multimodal intake (Phase 1C)** — The stateless validation contract
+  that accepts, normalizes, and records the *presence* of text/voice-
+  transcript/image/video input without interpreting any of it. See
+  `app/schemas/multimodal_intake.py` and
+  `app/services/multimodal_intake_service.py`.
 - **Liveness vs. readiness** — Liveness (`GET /health`) asks "is the
   process running?" and ignores database state. Readiness
   (`GET /api/v1/health/readiness`) asks "can this instance serve

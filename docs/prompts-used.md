@@ -178,3 +178,53 @@ running application.
 > updated to match, and all existing tests continued to pass unchanged
 > since they reference the mapping module's named constant, not the
 > literal string.
+
+### Phase 1C — Multimodal intake foundation
+
+> Implement MedRoute AI Phase 1C: multimodal medical-intake foundation.
+> Create a stateless backend intake API that accepts text, voice-
+> transcript, image-reference, and video-reference inputs; validates and
+> normalizes them; records which modalities were supplied; handles
+> explicitly user-declared emergency concerns; produces a typed, routing-
+> ready contract for Phase 1D; and does not process, interpret, download,
+> or analyze media, diagnose conditions, recommend treatment, or
+> autonomously assess urgency. The product owner explicitly changed
+> direction: MedRoute AI is multimodal, not a text-only symptom checker.
+>
+> This prompt anticipated the resulting documentation conflict itself:
+> `docs/roadmap.md`'s Phase 1C still described the old "Symptom Intake
+> Endpoint" (`SymptomIntake`, no routing) plan. Unlike the two prior
+> conflicts, this task explicitly said the conflict was already resolved
+> by product direction and instructed updating the milestone documentation
+> and continuing automatically without asking again — so the roadmap was
+> corrected (Phase 1C redefined as the multimodal intake foundation) before
+> any code was written, with no further confirmation requested.
+>
+> Request contract (`app/schemas/multimodal_intake.py`, all models
+> `extra="forbid"`): `symptoms` (max 10, trimmed/collapsed whitespace,
+> blank entries rejected, case-insensitive dedup preserving order),
+> `main_concern`, `duration` (positive bounded int + closed unit enum),
+> `location` (state/country uppercased, postal code never coerced to a
+> number), `preferred_specialty` (slug format-validated only — no database
+> lookup, keeping intake decoupled from the Phase 1B provider-search
+> database), `emergency_concern`/`emergency_signals` (user-declared,
+> closed enum, deduplicated), `voice_input` (pre-generated transcript +
+> conservative language-tag validation — no STT), and `vision_inputs`
+> (image/video URL references, HTTPS-only, credentials/localhost/private-
+> IP-literal/fragment/query-string rejected, deduplicated, never fetched —
+> documented explicitly as contract hardening, not a complete SSRF
+> defense). Pure service (`multimodal_intake_service.py`) evaluates
+> `emergency` / `needs_clarification` / `ready_for_multimodal_processing`
+> with emergency always taking precedence. Endpoint
+> (`api/v1/intake.py`) logs only safe operational metadata — counts,
+> booleans, the generated intake_id — never symptom/transcript/URL
+> content; log-capture tests with unique synthetic markers prove this.
+>
+> No database migration was created (Alembic head stayed at
+> `7b8a34b61996`); 106 new tests added (64 schema, 22 service, 20 HTTP),
+> for 236 total. One test-design issue was caught and fixed: patching the
+> raw `socket.socket` constructor to prove "no network calls" broke
+> Windows' own asyncio event-loop bootstrap (it uses raw sockets
+> internally for an unrelated self-pipe), so the check was narrowed to
+> `socket.create_connection` — the higher-level primitive HTTP clients
+> actually use to reach a remote host.
