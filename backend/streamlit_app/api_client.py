@@ -15,6 +15,7 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 NAVIGATE_PATH = "/api/v1/navigate"
+SPECIALTIES_PATH = "/api/v1/specialties"
 
 
 def build_navigation_payload(
@@ -72,4 +73,16 @@ def call_navigate(
     response = httpx.post(f"{base_url}{NAVIGATE_PATH}", json=payload, timeout=timeout)
     response.raise_for_status()
     result: dict[str, Any] = response.json()
+    return result
+
+
+def list_specialties(base_url: str, *, timeout: float = 10.0) -> list[dict[str, Any]]:
+    """GET the backend's supported specialty catalog for the dropdown.
+
+    Raises httpx.HTTPStatusError / httpx.HTTPError on failure so the caller
+    can fall back to "no specialty selected" instead of showing stale data.
+    """
+    response = httpx.get(f"{base_url}{SPECIALTIES_PATH}", timeout=timeout)
+    response.raise_for_status()
+    result: list[dict[str, Any]] = response.json()
     return result

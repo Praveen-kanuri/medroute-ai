@@ -7,7 +7,13 @@ httpx.MockTransport, never a live socket.
 import httpx
 import pytest
 
-from streamlit_app.api_client import NAVIGATE_PATH, build_navigation_payload, call_navigate
+from streamlit_app.api_client import (
+    NAVIGATE_PATH,
+    SPECIALTIES_PATH,
+    build_navigation_payload,
+    call_navigate,
+    list_specialties,
+)
 
 
 def test_build_payload_includes_only_supplied_fields() -> None:
@@ -114,3 +120,45 @@ def test_call_navigate_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(httpx.HTTPStatusError):
         call_navigate("http://backend.test", {"emergency_concern": False})
+
+
+def test_list_specialties_gets_specialties_path_and_returns_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    catalog = [{"slug": "cardiology", "display_name": "Cardiology", "description": None}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        return httpx.Response(200, json=catalog)
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_get(url: str, *, timeout: float) -> httpx.Response:
+        with httpx.Client(transport=transport) as client:
+            return client.get(url, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    result = list_specialties("http://backend.test")
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == f"http://backend.test{SPECIALTIES_PATH}"
+    assert result == catalog
+
+
+def test_list_specialties_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "unavailable"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_get(url: str, *, timeout: float) -> httpx.Response:
+        with httpx.Client(transport=transport) as client:
+            return client.get(url, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        list_specialties("http://backend.test")

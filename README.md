@@ -330,12 +330,48 @@ curl -X POST http://localhost:8000/api/v1/navigate \
 uv run pytest tests/test_specialty_routing_service.py tests/test_navigation_api.py
 ```
 
+### Demo data: a confirmed working example
+
+The NPPES fixture (`backend/tests/fixtures/nppes_sample.csv`) is small and
+synthetic, but two rows in it map to specialties in the Phase 1B catalog,
+so a search/navigation request against them returns a real result once
+the fixture is loaded (see [Run the small fixture
+import](#nppes-provider-ingestion-phase-1a) above — idempotent, safe to
+re-run):
+
+| Specialty | Location | Matching provider (synthetic) |
+|---|---|---|
+| `family-medicine` | city=`Springfield`, state=`CA` | "Jane Q Smith, MD, FACP" (individual, primary taxonomy `207Q00000X`) |
+| `general-surgery` | city=`Holtsville`, state=`NY` | "Springfield Clinic LLC" (organization, taxonomy `208600000X`) |
+
+Verified directly against both `GET /api/v1/providers/search` and
+`POST /api/v1/navigate`:
+
+```bash
+curl "http://localhost:8000/api/v1/providers/search?specialty=family-medicine&city=Springfield&state=CA"
+
+curl -X POST http://localhost:8000/api/v1/navigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symptoms": ["annual checkup"],
+    "duration": {"value": 1, "unit": "days"},
+    "location": {"city": "Springfield", "state": "CA"}
+  }'
+```
+
+The second request deliberately uses `"annual checkup"` rather than
+`preferred_specialty` — `"checkup"` is one of `family-medicine`'s
+deterministic routing keywords (see
+`app/catalog/nucc_specialties.py`), so this also exercises real
+keyword-based routing end to end, not just a direct specialty pick.
+
 ### Streamlit demo UI
 
 A lightweight demo frontend (`backend/streamlit_app/`) calls
-`/api/v1/navigate` only — it contains no routing, ranking, or search logic
-of its own. This is a **demo UI, not the planned production frontend**
-(React remains Phase 5, a separate later milestone).
+`/api/v1/navigate` and `/api/v1/specialties` only — it contains no
+routing, ranking, or search logic of its own, and never hardcodes a
+provider result. This is a **demo UI, not the planned production
+frontend** (React remains Phase 5, a separate later milestone).
 
 Run (from `backend/`, with the API already running at `localhost:8000`):
 
@@ -343,14 +379,29 @@ Run (from `backend/`, with the API already running at `localhost:8000`):
 uv run streamlit run streamlit_app/app.py
 ```
 
-Supports text symptoms, main concern, duration, location, a preferred-
-specialty slug, and a user-declared emergency checkbox; displays the
-clarification/emergency/media-unavailable/routed/provider-result states
-and the non-diagnostic and emergency disclaimers. It does not persist or
-log anything itself — each submission is a single forwarded request.
+- A permanent warning is always shown: if you believe you may be
+  experiencing a medical emergency, don't use this demo — call 911 (U.S.).
+- The Backend URL lives in a collapsed **Developer settings** section in
+  the sidebar; most users never need to touch it.
+- **Preferred specialty** is a dropdown populated live from
+  `GET /api/v1/specialties` (falls back to "no specialty selected" if the
+  backend is unreachable) — no free-text slug entry.
+- **Try demo example** pre-fills the form with the confirmed
+  `family-medicine` / Springfield, CA combination above — it only fills in
+  inputs; the result shown always comes from a real call to the backend.
+- The routing result and the provider-search results are shown in clearly
+  separate sections. When routing succeeds but nothing matches, the UI
+  says so explicitly ("Specialty routing succeeded, but no matching
+  providers are currently loaded for this location.") rather than a bare
+  "not found."
+- Supports text symptoms, main concern, duration, location, and a
+  user-declared emergency checkbox; displays the clarification/emergency/
+  media-unavailable/routed/provider-result states and the non-diagnostic
+  and emergency disclaimers. It does not persist or log anything itself —
+  each submission is a single forwarded request.
 
 **Run the Streamlit API client tests** (payload construction + the HTTP
-call, against a mock transport — no real network):
+calls, against a mock transport — no real network):
 
 ```bash
 uv run pytest tests/test_streamlit_api_client.py

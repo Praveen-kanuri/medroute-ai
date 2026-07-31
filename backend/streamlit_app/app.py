@@ -15,7 +15,12 @@ the current form values to the backend for this one request/response.
 import httpx
 import streamlit as st
 
-from streamlit_app.api_client import DEFAULT_BASE_URL, build_navigation_payload, call_navigate
+from streamlit_app.api_client import (
+    DEFAULT_BASE_URL,
+    build_navigation_payload,
+    call_navigate,
+    list_specialties,
+)
 
 NON_DIAGNOSTIC_DISCLAIMER = (
     "MedRoute AI provides navigation assistance and does not diagnose conditions, "
@@ -25,38 +30,93 @@ EMERGENCY_SAFETY_MESSAGE = (
     "If you are experiencing a medical emergency, call 911 (in the United States) "
     "or seek immediate emergency care. MedRoute AI cannot provide emergency assistance."
 )
+PERMANENT_EMERGENCY_WARNING = (
+    "If you believe you may be experiencing a medical emergency, do not use this demo. "
+    "In the U.S., call 911."
+)
+NO_SPECIALTY_SELECTED_LABEL = "(let MedRoute AI suggest one)"
+
+# A specialty/location combination confirmed to return a result against the
+# NPPES fixture (see README.md "Navigation demo & specialty routing" for how
+# this data is loaded). The button only pre-fills form inputs; the actual
+# result always comes from a real call to the backend, never hardcoded here.
+DEMO_SYMPTOMS = "annual checkup"
+DEMO_CITY = "Springfield"
+DEMO_STATE = "CA"
+DEMO_DURATION_VALUE = 1
+DEMO_DURATION_UNIT = "days"
+
+
+def _load_demo_example() -> None:
+    st.session_state["symptoms_text"] = DEMO_SYMPTOMS
+    st.session_state["main_concern"] = ""
+    st.session_state["duration_value"] = DEMO_DURATION_VALUE
+    st.session_state["duration_unit"] = DEMO_DURATION_UNIT
+    st.session_state["city"] = DEMO_CITY
+    st.session_state["state"] = DEMO_STATE
+    st.session_state["postal_code"] = ""
+    st.session_state["specialty_label"] = NO_SPECIALTY_SELECTED_LABEL
+    st.session_state["emergency_concern"] = False
+
 
 st.set_page_config(page_title="MedRoute AI (Demo)")
 
 st.title("MedRoute AI — Navigation Demo")
 st.caption(NON_DIAGNOSTIC_DISCLAIMER)
+st.warning(PERMANENT_EMERGENCY_WARNING)
 
 with st.sidebar:
-    base_url = st.text_input("Backend URL", value=DEFAULT_BASE_URL)
-    st.caption(
-        "This demo does not upload or process images/video yet — media inputs are "
-        "not available in this milestone."
+    with st.expander("Developer settings", expanded=False):
+        base_url = st.text_input("Backend URL", value=DEFAULT_BASE_URL)
+
+try:
+    specialties = list_specialties(base_url)
+except httpx.HTTPError:
+    specialties = []
+    st.sidebar.warning(
+        "Could not load the specialty catalog from the backend. You can still submit "
+        "without selecting a preferred specialty."
     )
 
-emergency_concern = st.checkbox("I am declaring a medical emergency")
-if emergency_concern:
-    st.warning(EMERGENCY_SAFETY_MESSAGE)
+st.button(
+    "Try demo example",
+    on_click=_load_demo_example,
+    help=(
+        "Fills in a symptom and location known to match a provider already loaded "
+        "from the NPPES fixture data — see README.md for details."
+    ),
+)
 
-symptoms_text = st.text_area("Symptoms (one per line)", "")
-main_concern = st.text_input("Main concern")
+emergency_concern = st.checkbox("I am declaring a medical emergency", key="emergency_concern")
+if emergency_concern:
+    st.error(EMERGENCY_SAFETY_MESSAGE)
+
+symptoms_text = st.text_area("Symptoms (one per line)", key="symptoms_text")
+main_concern = st.text_input("Main concern", key="main_concern")
 
 duration_col, unit_col = st.columns(2)
 with duration_col:
-    duration_value = st.number_input("Duration", min_value=0, max_value=1000, value=0, step=1)
+    duration_value = st.number_input(
+        "Duration", min_value=0, max_value=1000, step=1, key="duration_value"
+    )
 with unit_col:
-    duration_unit = st.selectbox("Unit", ["", "hours", "days", "weeks", "months"])
+    duration_unit = st.selectbox(
+        "Unit", ["", "hours", "days", "weeks", "months"], key="duration_unit"
+    )
 
-city = st.text_input("City (optional)")
-state = st.text_input("State (optional, 2-letter)")
-postal_code = st.text_input("Postal code (optional)")
-preferred_specialty = st.text_input(
-    "Preferred specialty slug (optional, e.g. cardiology)",
-    help="Must match a slug from GET /api/v1/specialties.",
+city = st.text_input("City (optional)", key="city")
+state = st.text_input("State (optional, 2-letter)", key="state")
+postal_code = st.text_input("Postal code (optional)", key="postal_code")
+
+specialty_labels = [NO_SPECIALTY_SELECTED_LABEL] + [s["display_name"] for s in specialties]
+specialty_label = st.selectbox(
+    "Preferred specialty (optional)",
+    specialty_labels,
+    key="specialty_label",
+    help="Selecting one skips MedRoute AI's own specialty matching for this request.",
+)
+preferred_specialty = next(
+    (s["slug"] for s in specialties if s["display_name"] == specialty_label), None
 )
 
 submitted = st.button("Submit")
@@ -71,7 +131,7 @@ if submitted:
         city=city or None,
         state=state or None,
         postal_code=postal_code or None,
-        preferred_specialty=preferred_specialty or None,
+        preferred_specialty=preferred_specialty,
         emergency_concern=emergency_concern,
     )
 
@@ -96,15 +156,17 @@ if submitted:
             if media_note:
                 st.warning(media_note)
 
+            st.subheader("Specialty routing result")
             routing = result.get("routing")
             if routing and routing.get("specialty_slug"):
                 st.success(f"Routed to: {routing['specialty_display_name']} — {routing['note']}")
             elif routing:
                 st.warning(routing["note"])
 
+            st.divider()
+            st.subheader("Provider search results")
             search = result.get("provider_search")
             if search and search["results"]:
-                st.subheader("Matching providers")
                 for provider in search["results"]:
                     st.write(f"**{provider['display_name']}** ({provider['entity_type_code']})")
                     location = provider.get("practice_location")
@@ -115,6 +177,11 @@ if submitted:
                         )
                 st.caption(search["disclaimer"])
             elif search is not None:
-                st.info("No matching providers found.")
+                st.info(
+                    "Specialty routing succeeded, but no matching providers are "
+                    "currently loaded for this location."
+                )
+            else:
+                st.info("No specialty was matched, so provider search did not run.")
 
         st.caption(intake["disclaimer"])

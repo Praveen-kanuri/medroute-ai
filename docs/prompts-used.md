@@ -282,3 +282,44 @@ running application.
 > new tests added (11 routing service — including three that monkeypatch
 > `groq.AsyncGroq` to prove the fallback path without any real network
 > call, 16 navigation HTTP, 15 Streamlit API client), for 278 total.
+
+### Phase 1D demo polish — Streamlit UI, confirmed demo data
+
+> Polish the Phase 1D Streamlit demo: replace the free-text preferred-
+> specialty field with a dropdown populated from the catalog; move the
+> Backend URL into a collapsed "Developer settings" section; add a
+> permanent visible emergency warning; replace "No matching providers
+> found" with clearer wording distinguishing successful routing from an
+> empty result; visually separate the routing result from provider-search
+> results; preserve the non-diagnostic disclaimer. Separately, inspect the
+> existing NPPES fixture and local database data (no external downloads,
+> no invented provider identities) to identify and document one
+> specialty/location combination that actually returns a result, loading
+> the fixture via the existing ingestion command if the database was
+> empty, and add a "Try demo example" button only if it can safely reuse
+> that existing fixture data — never hardcoding a provider result in the
+> UI itself.
+>
+> The database already had the Phase 1A/1B fixture and specialty catalog
+> loaded from earlier manual testing, so no re-ingestion was needed this
+> time — confirmed live against both `GET /api/v1/providers/search` and
+> `POST /api/v1/navigate`. Two fixture rows map to catalog specialties:
+> `family-medicine` in Springfield, CA (an individual provider, primary
+> taxonomy) and `general-surgery` in Holtsville, NY (an organization,
+> non-primary taxonomy). The demo button uses the first combination via
+> `"annual checkup"` (a real `family-medicine` routing keyword) rather
+> than a direct specialty pick, so it also exercises genuine keyword-based
+> routing end to end, not just a bypass. Added `list_specialties()` to
+> `streamlit_app/api_client.py` (same `httpx.MockTransport`-based test
+> pattern as `call_navigate()` — no real network in tests) and used
+> Streamlit's `key=`-plus-`session_state` pattern in an `on_click`
+> callback so the demo button can pre-fill widget values without
+> triggering Streamlit's "widget already instantiated" state-mutation
+> error. Manually verified end-to-end by running both the real FastAPI
+> server and `streamlit run` locally and confirming no exceptions and a
+> successful live call to `/api/v1/specialties`.
+>
+> No backend/API/service code changed — only `streamlit_app/{app.py,
+> api_client.py}`, one new test file addition, and documentation. No
+> database migration, no new dependency. Total tests: 280 (278 + 2 new
+> `list_specialties` client tests).
