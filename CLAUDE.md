@@ -38,9 +38,11 @@ backend/app/
   safety/         Emergency disclaimers + user-declared emergency constants
   schemas/        Pydantic v2 domain models (intake, multimodal_intake, routing,
                     doctor, booking, provider_search)
-  services/       Pure business logic (provider ranking/search, multimodal intake)
+  services/       Pure business logic (provider ranking/search, multimodal intake,
+                    deterministic specialty routing)
   tools/          LangGraph tool implementations (future milestone)
   main.py         FastAPI app factory
+streamlit_app/    Lightweight demo UI (calls the API only; no logic of its own)
 ```
 
 Provider interfaces are abstract and async so real integrations (Groq,
@@ -75,13 +77,15 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 1C — multimodal intake foundation. A stateless
-`POST /api/v1/intake/validate` endpoint accepts and normalizes text
-symptoms, a pre-generated voice transcript, and image/video URL
-references, records which modalities were supplied, and evaluates a
-deterministic `emergency` / `needs_clarification` /
-`ready_for_multimodal_processing` state — with no interpretation: no
-speech-to-text, no vision analysis, no LLM calls, no specialty inference,
-and nothing persisted. Emergency indicators are user-declared only, never
-inferred. See `docs/roadmap.md` for what comes next (Phase 1D adds actual
-model-based interpretation on top of this contract).
+Phase 1D — controlled specialty routing and navigation demo. A stateless
+`POST /api/v1/navigate` endpoint composes the Phase 1C intake contract,
+a new deterministic (no-LLM-by-default) specialty router that only ever
+selects from the Phase 1B specialty catalog, and the existing Phase 1B
+provider search — preserving emergency/clarification precedence exactly.
+An optional Groq-backed router is available via `ROUTING_MODE=groq` but
+is always validated against the catalog and falls back to deterministic
+on any failure; it is never exercised in tests. Image/video URLs are
+still never fetched or analyzed. A lightweight Streamlit demo UI
+(`backend/streamlit_app/`) calls this endpoint; React remains the
+planned production frontend (Phase 5), not replaced by Streamlit. See
+`docs/roadmap.md` for what comes next.

@@ -10,7 +10,7 @@
 - Environment-based configuration.
 - Docker, Docker Compose, CI workflow, docs scaffolding.
 
-## Phase 0.2 — PostgreSQL Persistence Foundation (current)
+## Phase 0.2 — PostgreSQL Persistence Foundation (complete)
 
 - Async SQLAlchemy 2.x engine, session factory, and FastAPI session
   dependency; Alembic owns all schema changes (no `metadata.create_all()`
@@ -51,7 +51,7 @@
 - Symptom-to-specialty inference, Qdrant/vector search, and appointment
   booking remain explicitly out of scope.
 
-## Phase 1C — Multimodal Intake Foundation (current)
+## Phase 1C — Multimodal Intake Foundation (complete)
 
 - Product direction corrected: MedRoute AI is a multimodal assistant, not
   a text-only symptom checker. This supersedes the earlier "Symptom Intake
@@ -67,6 +67,34 @@
 - Does not interpret media, transcribe audio, synthesize speech, call any
   model/LLM/vision provider, infer a specialty, or persist anything —
   those are Phase 1D+ (see docs/architecture.md's Phase 1D handoff notes).
+
+## Phase 1D — Controlled Specialty Routing & Navigation Demo (current)
+
+- `POST /api/v1/navigate` composes the existing Phase 1C intake
+  evaluation, a new deterministic specialty router, and the existing
+  Phase 1B provider search into one end-to-end demo endpoint — none of
+  their logic is duplicated.
+- Emergency and clarification precedence from Phase 1C are unchanged:
+  routing and provider search only run once intake is
+  `ready_for_multimodal_processing`.
+- Specialty routing is controlled — it only ever selects a specialty
+  already present in the Phase 1B catalog. Default: deterministic
+  keyword matching (no model call). An explicit `preferred_specialty`
+  always bypasses matching, after catalog validation. An optional
+  Groq-backed structured router (`ROUTING_MODE=groq` + a real API key)
+  may propose a slug, but it is always validated against the same
+  catalog before use and falls back to the deterministic path on any
+  failure; never invoked in tests.
+- Never returns a diagnosis, treatment advice, urgency score, or medical
+  certainty claim; never infers an emergency autonomously; never fetches
+  or interprets image/video URLs — the response clearly states media
+  processing is not available in this demo.
+- A lightweight Streamlit UI (`backend/streamlit_app/`) is the **current
+  demo frontend** — it calls `/api/v1/navigate` only and contains no
+  routing/ranking logic of its own. React remains the planned
+  **production** frontend (Phase 5); Streamlit does not replace that
+  milestone.
+- Stateless: no new database table, no Alembic migration.
 
 ## Phase 2 — LLM-Backed Routing (planned)
 
@@ -84,9 +112,11 @@
 - Real `SpeechToTextProvider` (Deepgram) and `TextToSpeechProvider`.
 - Voice-based intake flow.
 
-## Phase 5 — Frontend (planned)
+## Phase 5 — Production Frontend (planned)
 
-- React/TypeScript client consuming the FastAPI backend.
+- React/TypeScript client consuming the FastAPI backend. This is the
+  planned production UI; it is separate from and does not replace the
+  Streamlit demo UI introduced in Phase 1D.
 
 ## Later (unscheduled)
 

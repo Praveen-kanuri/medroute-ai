@@ -23,6 +23,10 @@ class SpecialtySeed:
     description: str
     taxonomy_code: str
     taxonomy_description: str
+    # Plain-language keywords used only by the deterministic (non-LLM)
+    # Phase 1D routing fallback — never persisted to the database, never a
+    # medical claim, just a transparent keyword-overlap signal.
+    keywords: tuple[str, ...] = ()
 
 
 SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
@@ -32,6 +36,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Primary care across all ages.",
         taxonomy_code="207Q00000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Family Medicine",
+        keywords=("checkup", "primary", "general", "family", "flu", "cold", "fever"),
     ),
     SpecialtySeed(
         slug="internal-medicine",
@@ -39,6 +44,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Adult primary and consultative medicine.",
         taxonomy_code="207R00000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Internal Medicine",
+        keywords=("fatigue", "diabetes", "adult", "chronic", "internal"),
     ),
     SpecialtySeed(
         slug="cardiology",
@@ -48,6 +54,15 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         taxonomy_description=(
             "Allopathic & Osteopathic Physicians / Internal Medicine, Cardiovascular Disease"
         ),
+        keywords=(
+            "heart",
+            "chest",
+            "palpitations",
+            "cardiac",
+            "cardiovascular",
+            "blood",
+            "pressure",
+        ),
     ),
     SpecialtySeed(
         slug="pediatrics",
@@ -55,6 +70,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Medical care for infants, children, and adolescents.",
         taxonomy_code="208000000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Pediatrics",
+        keywords=("child", "infant", "baby", "kid", "adolescent", "pediatric"),
     ),
     SpecialtySeed(
         slug="psychiatry",
@@ -64,6 +80,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         taxonomy_description=(
             "Allopathic & Osteopathic Physicians / Psychiatry & Neurology, Psychiatry"
         ),
+        keywords=("anxiety", "depression", "mood", "mental", "stress", "sleep", "psychiatric"),
     ),
     SpecialtySeed(
         slug="dermatology",
@@ -71,6 +88,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Diagnosis and treatment of skin, hair, and nail conditions.",
         taxonomy_code="207N00000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Dermatology",
+        keywords=("skin", "rash", "acne", "mole", "itch", "hair", "nail", "dermatology"),
     ),
     SpecialtySeed(
         slug="orthopaedic-surgery",
@@ -78,6 +96,17 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Surgical and non-surgical care of the musculoskeletal system.",
         taxonomy_code="207X00000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Orthopaedic Surgery",
+        keywords=(
+            "knee",
+            "joint",
+            "bone",
+            "fracture",
+            "back",
+            "shoulder",
+            "sprain",
+            "orthopaedic",
+            "orthopedic",
+        ),
     ),
     SpecialtySeed(
         slug="obstetrics-gynecology",
@@ -85,6 +114,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Women's reproductive health, pregnancy, and childbirth.",
         taxonomy_code="207V00000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Obstetrics & Gynecology",
+        keywords=("pregnancy", "pregnant", "gynecology", "obstetrics", "menstrual"),
     ),
     SpecialtySeed(
         slug="general-surgery",
@@ -92,6 +122,7 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         description="Surgical treatment of a broad range of conditions.",
         taxonomy_code="208600000X",
         taxonomy_description="Allopathic & Osteopathic Physicians / Surgery",
+        keywords=("surgery", "surgical", "hernia", "appendix", "gallbladder"),
     ),
     SpecialtySeed(
         slug="diagnostic-radiology",
@@ -101,5 +132,6 @@ SPECIALTY_SEEDS: tuple[SpecialtySeed, ...] = (
         taxonomy_description=(
             "Allopathic & Osteopathic Physicians / Radiology, Diagnostic Radiology"
         ),
+        keywords=("xray", "x-ray", "scan", "imaging", "mri", "ct", "ultrasound", "radiology"),
     ),
 )

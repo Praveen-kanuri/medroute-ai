@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     deepgram_stt_model: str = "flux-general-en"
     deepgram_tts_model: str = "aura-2-thalia-en"
 
+    # "deterministic" (default): keyword-based specialty routing, no model
+    # call. "groq" additionally tries a Groq-backed structured router first
+    # (only when groq_configured is also true), validating its output
+    # against the specialty catalog and falling back to deterministic on
+    # any failure. Tests always use the deterministic default.
+    routing_mode: str = "deterministic"
+
     database_url: SecretStr | None = None
     database_echo: bool = False
 

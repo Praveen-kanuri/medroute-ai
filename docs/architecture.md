@@ -40,9 +40,13 @@ future LangGraph routing graph. It is designed so LLM-backed intelligence
   duplicate providers.
 - **services/** — `provider_ranking.py` (pure, DB-free, deterministic sort),
   `provider_search_service.py` (orchestrates the repository, ranking, and
-  pagination), and `multimodal_intake_service.py` (pure evaluation of a
+  pagination), `multimodal_intake_service.py` (pure evaluation of a
   Phase 1C intake request into a deterministic state — no DB, no network,
-  no model calls). No LLM calls anywhere in this layer.
+  no model calls), and `specialty_routing_service.py` (Phase 1D:
+  deterministic keyword-based specialty routing by default, with an
+  optional catalog-validated Groq path). No LLM call happens anywhere in
+  this layer unless `ROUTING_MODE=groq` is explicitly configured with a
+  real key.
 - **safety/** — Disclaimer text and user-declared emergency messaging
   (`app/safety/constants.py`). Autonomous/inferred emergency detection
   from free text or media remains a dedicated future milestone.
@@ -121,20 +125,59 @@ booleans/counts, whether duration/location were supplied, processing
 time) — never symptom text, transcripts, emergency-signal values, or
 media URLs.
 
-### Phase 1D handoff (documented, not implemented)
+## Phase 1D: controlled specialty routing & navigation demo
 
-Phase 1D may add: an LLM-provider abstraction and real text understanding,
-vision-model processing producing a non-diagnostic visual description,
-controlled specialty mapping, deterministic provider-search orchestration
-on top of Phase 1B, model-output validation, safety guardrails, and
-model-evaluation fixtures. It must still never diagnose, offer a
-differential diagnosis, give treatment instructions, claim medical
-certainty, infer an emergency autonomously, trust unvalidated model output
-directly, or claim that visual interpretation replaces a clinical
-examination. Real speech-to-text/text-to-speech (Phase 4) and the frontend
-(Phase 5) remain separate, later milestones.
+`POST /api/v1/navigate` (`app/api/v1/navigation.py`) composes three
+existing pieces without duplicating any of their logic: Phase 1C's
+`evaluate_intake()`, a new `specialty_routing_service.route_to_specialty()`,
+and Phase 1B's `search_providers_page()`. Emergency/clarification
+precedence from Phase 1C is preserved exactly — routing and provider
+search only execute when intake status is
+`ready_for_multimodal_processing`.
 
-## Phase 0 / 0.2 / 1A / 1B / 1C scope
+Specialty routing (`app/services/specialty_routing_service.py`) is
+*controlled*: it only ever returns a slug already present in the Phase 1B
+catalog (`app/catalog/nucc_specialties.py`), never an invented one.
+
+- **Default:** deterministic keyword-overlap matching against each
+  specialty's curated `keywords` tuple — no model call.
+- **User override:** an explicit `preferred_specialty` always bypasses
+  matching entirely, once validated against the catalog.
+- **Optional:** `ROUTING_MODE=groq` (plus a real `GROQ_API_KEY`) tries a
+  structured JSON-only Groq completion first (a single
+  `{"specialty_slug": ...}` field — no chain-of-thought is ever
+  requested or surfaced), but its output is *always* re-validated against
+  the same catalog and silently falls back to the deterministic path on
+  any failure (bad key, network error, malformed JSON, or a slug outside
+  the catalog). This path is never exercised by the test suite, which
+  always runs with the default `deterministic` mode and no key.
+
+Neither path ever returns a diagnosis, treatment advice, urgency score, or
+medical-certainty claim, and neither infers an emergency — that precedence
+is entirely Phase 1C's. Image/video URLs are still never fetched or
+analyzed; when vision input was supplied, the response includes a plain
+`media_note` saying so, mirroring Phase 1C's own `vision_received` flag.
+
+**Streamlit demo UI** (`backend/streamlit_app/`) is the current, lightweight
+demo frontend: `app.py` renders the form and calls `/api/v1/navigate`
+through `api_client.py`; it contains no routing, ranking, or search logic
+of its own. React remains the planned **production** frontend (Phase 5) —
+Streamlit does not replace or precede it.
+
+### Beyond Phase 1D (documented, not implemented)
+
+Real text/vision-model understanding (rather than deterministic keyword
+matching), vision-model processing producing a non-diagnostic visual
+description, model-output validation beyond catalog-slug checking, and
+model-evaluation fixtures remain future work. Any of it must still never
+diagnose, offer a differential diagnosis, give treatment instructions,
+claim medical certainty, infer an emergency autonomously, trust
+unvalidated model output directly, or claim that visual interpretation
+replaces a clinical examination. Real speech-to-text/text-to-speech
+(Phase 4) and the production React frontend (Phase 5) remain separate,
+later milestones.
+
+## Phase 0 / 0.2 / 1A / 1B / 1C / 1D scope
 
 The package skeleton, abstract provider interfaces with fake
 implementations, domain schemas, configuration, and engineering tooling
@@ -144,6 +187,8 @@ normalized NPPES provider-directory schema and chunked, idempotent CSV
 ingestion (Phase 1A), plus a small specialty catalog and deterministic
 (no-LLM) provider search API with explainable ranking (Phase 1B), plus a
 stateless multimodal intake validation contract with no interpretation
-(Phase 1C). No graph wiring, no real LLM/STT/TTS provider calls, no full
-national NPPES import, no Qdrant/vector search, and no symptom-to-specialty
-inference yet — those are Phase 1D+.
+(Phase 1C), plus controlled deterministic specialty routing, an
+end-to-end navigation demo endpoint, and a Streamlit demo UI (Phase 1D).
+No graph wiring, no real vision/STT/TTS provider calls, no full national
+NPPES import, no Qdrant/vector search, and no autonomous/inferred
+emergency detection yet — those remain later-phase work.

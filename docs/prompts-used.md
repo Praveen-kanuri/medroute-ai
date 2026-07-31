@@ -228,3 +228,57 @@ running application.
 > internally for an unrelated self-pipe), so the check was narrowed to
 > `socket.create_connection` — the higher-level primitive HTTP clients
 > actually use to reach a remote host.
+
+### Phase 1D — controlled specialty routing, navigation demo, Streamlit UI
+
+> Implement Phase 1D controlled specialty routing (consuming the existing
+> validated Phase 1C intake, preserving emergency/clarification
+> precedence, routing only to specialties already in the curated
+> catalog, model output strictly structured and validated, never a
+> diagnosis/treatment/urgency score, no autonomous emergency inference,
+> no chain-of-thought exposure, deterministic provider discovery kept
+> separate from AI routing, media not fetched/interpreted yet), one
+> end-to-end navigation API (intake → safety/clarification gate →
+> specialty routing → provider search; an explicitly selected specialty
+> bypasses AI selection after catalog validation; deterministic local
+> routing by default, Groq optional via configuration, never called in
+> tests), a lightweight Streamlit portfolio UI inside this repository
+> calling the navigation API only (no duplicated backend logic, no
+> React/auth/booking/STT/TTS/vision, no logging of sensitive intake
+> content), and tests for all of it. No database migration unless
+> genuinely required — this milestone stays stateless.
+>
+> Specialty routing (`app/services/specialty_routing_service.py`) is
+> deterministic keyword-overlap matching by default, using a new
+> `keywords` tuple added to each `SpecialtySeed`
+> (`app/catalog/nucc_specialties.py`) — Python-only, no schema change, no
+> migration. An explicit `preferred_specialty` bypasses matching entirely
+> once validated against the catalog. The optional Groq path
+> (`ROUTING_MODE=groq` + a real key) requests a single
+> `{"specialty_slug": ...}` JSON field only, never free-form reasoning,
+> and is re-validated against the catalog before use; any failure falls
+> back to deterministic silently. `POST /api/v1/navigate`
+> (`app/api/v1/navigation.py`) composes `evaluate_intake()` (Phase 1C),
+> `route_to_specialty()`, and `search_providers_page()` (Phase 1B)
+> without duplicating any of their logic; routing/search only execute
+> when intake status is `ready_for_multimodal_processing`; a `media_note`
+> is added whenever vision input was supplied, since media is still
+> never fetched or analyzed.
+>
+> The Streamlit demo (`backend/streamlit_app/`) is a separate `app.py` +
+> `api_client.py` pair — `api_client.py` has no `streamlit` import at all
+> so its payload-building and HTTP-call logic is unit-testable in
+> isolation, using `httpx.MockTransport` (never a real socket).
+>
+> This prompt surfaced no new roadmap conflict (docs/roadmap.md's earlier
+> Phase 1C entry already pointed forward to "Phase 1D adds actual
+> model-based interpretation," and this milestone's scope — controlled,
+> catalog-bound routing, not free-form model interpretation — fit within
+> that framing), so the roadmap/CLAUDE.md/PROJECT_WIKI.md were updated to
+> mark Phase 1D current (and Phase 0.2/1C complete, which had been left
+> stale) without needing to ask again.
+>
+> No Alembic migration was created (head stayed at `7b8a34b61996`); 42
+> new tests added (11 routing service — including three that monkeypatch
+> `groq.AsyncGroq` to prove the fallback path without any real network
+> call, 16 navigation HTTP, 15 Streamlit API client), for 278 total.

@@ -11,20 +11,20 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
-Phase 1C: multimodal intake foundation. A stateless
-`POST /api/v1/intake/validate` endpoint validates and normalizes text
-symptoms, a pre-generated voice transcript, and image/video URL
-references, records which modalities were supplied, and returns a
-deterministic `emergency` / `needs_clarification` /
-`ready_for_multimodal_processing` state. No speech-to-text, text-to-speech,
-vision analysis, LLM calls, specialty inference, or persistence happen
-here — see [Multimodal intake](#multimodal-intake-phase-1c) below.
+Phase 1D: controlled specialty routing & navigation demo.
+`POST /api/v1/navigate` composes the Phase 1C intake contract, a new
+deterministic (no-LLM-by-default) specialty router that only ever selects
+from the Phase 1B specialty catalog, and Phase 1B's provider search into
+one end-to-end flow — preserving emergency/clarification precedence
+exactly. A lightweight Streamlit demo UI calls this endpoint. See
+[Navigation demo](#navigation-demo--specialty-routing-phase-1d) below.
 
 ## Stack
 
 Python 3.11 · uv · FastAPI · Pydantic v2 · SQLAlchemy 2 (async) · asyncpg ·
-Alembic · LangGraph · pytest · Ruff · mypy · Docker · GitHub Actions.
-Future: React/TypeScript frontend.
+Alembic · Streamlit (demo UI) · LangGraph · pytest · Ruff · mypy · Docker ·
+GitHub Actions. Future: React/TypeScript **production** frontend (Phase 5,
+separate from and not replaced by the Streamlit demo).
 
 ## Getting started
 
@@ -278,19 +278,92 @@ curl -X POST http://localhost:8000/api/v1/intake/validate \
 uv run pytest tests/test_multimodal_intake_schema.py tests/test_multimodal_intake_service.py tests/test_multimodal_intake_api.py
 ```
 
-**Phase 1D handoff (documented, not implemented):** Phase 1D may add an
-LLM-provider abstraction, real text/vision understanding, non-diagnostic
-visual description, controlled specialty mapping, and deterministic
-provider-search orchestration on top of this contract and Phase 1B —
-still without diagnosis, differential diagnosis, treatment instructions,
-medical-certainty claims, autonomous emergency determination, or direct
-trust in unvalidated model output. See
-[docs/architecture.md](docs/architecture.md) for the full handoff notes.
-Real speech-to-text/text-to-speech (Phase 4) and the frontend (Phase 5)
-remain later milestones. See the [FDA's clinical decision support
-guidance](https://www.fda.gov/regulatory-information/search-fda-guidance-documents/clinical-decision-support-software)
+Phase 1D builds directly on this contract — see the next section. Real
+speech-to-text/text-to-speech (Phase 4) and the production frontend
+(Phase 5) remain later milestones. See the [FDA's clinical decision
+support guidance](https://www.fda.gov/regulatory-information/search-fda-guidance-documents/clinical-decision-support-software)
 for the kind of software category MedRoute AI is deliberately staying out
 of.
+
+## Navigation demo & specialty routing (Phase 1D)
+
+`POST /api/v1/navigate` composes three already-existing pieces without
+duplicating their logic: Phase 1C's intake evaluation, a new specialty
+router, and Phase 1B's provider search.
+
+- **Emergency and clarification precedence are unchanged.** Routing and
+  provider search only run once intake status is
+  `ready_for_multimodal_processing`.
+- **Routing is controlled.** It only ever selects a specialty already in
+  the Phase 1B catalog (`GET /api/v1/specialties`) — never an invented
+  one. By default this is deterministic keyword matching (no model
+  call). An explicit `preferred_specialty` always bypasses matching,
+  after catalog validation.
+- **Never a diagnosis.** No treatment advice, urgency score, or medical-
+  certainty claim, ever.
+- **Media is still not processed.** If `vision_inputs` was supplied, the
+  response includes a plain `media_note` saying image/video analysis
+  isn't available in this demo — text/voice-transcript routing still
+  proceeds normally.
+- **Optional Groq-backed routing:** set `ROUTING_MODE=groq` and a real
+  `GROQ_API_KEY` to try a structured, catalog-validated Groq completion
+  first (a single JSON `specialty_slug` field only — no chain-of-thought
+  is ever requested or shown). Any failure (no key, network error,
+  malformed response, or a slug outside the catalog) falls back to
+  deterministic matching silently. Off by default; never used in tests.
+
+**Example request** (synthetic data only):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/navigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symptoms": ["chest pain", "heart palpitations"],
+    "duration": {"value": 2, "unit": "days"},
+    "location": {"city": "Dallas", "state": "TX"}
+  }'
+```
+
+**Run navigation/routing tests:**
+
+```bash
+uv run pytest tests/test_specialty_routing_service.py tests/test_navigation_api.py
+```
+
+### Streamlit demo UI
+
+A lightweight demo frontend (`backend/streamlit_app/`) calls
+`/api/v1/navigate` only — it contains no routing, ranking, or search logic
+of its own. This is a **demo UI, not the planned production frontend**
+(React remains Phase 5, a separate later milestone).
+
+Run (from `backend/`, with the API already running at `localhost:8000`):
+
+```bash
+uv run streamlit run streamlit_app/app.py
+```
+
+Supports text symptoms, main concern, duration, location, a preferred-
+specialty slug, and a user-declared emergency checkbox; displays the
+clarification/emergency/media-unavailable/routed/provider-result states
+and the non-diagnostic and emergency disclaimers. It does not persist or
+log anything itself — each submission is a single forwarded request.
+
+**Run the Streamlit API client tests** (payload construction + the HTTP
+call, against a mock transport — no real network):
+
+```bash
+uv run pytest tests/test_streamlit_api_client.py
+```
+
+### What's deferred
+
+Real text/vision-model understanding (rather than deterministic keyword
+matching), a full LLM-provider abstraction, non-diagnostic visual
+description, and model-evaluation fixtures remain future work — see
+[docs/architecture.md](docs/architecture.md)'s "Beyond Phase 1D" notes.
+Appointment scheduling/booking, authentication, and the production
+frontend are separate, later milestones.
 
 ## Validation
 
