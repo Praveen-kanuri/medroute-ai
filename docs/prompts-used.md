@@ -323,3 +323,78 @@ running application.
 > api_client.py}`, one new test file addition, and documentation. No
 > database migration, no new dependency. Total tests: 280 (278 + 2 new
 > `list_specialties` client tests).
+
+### Phase 2A — real voice intake with Groq Whisper
+
+> Implement Phase 2A: real voice intake using Groq Whisper. Required flow:
+> audio upload → Groq Whisper transcription → editable transcript → user
+> confirmation → existing `/api/v1/navigate` flow → specialty routing →
+> provider search. A new `POST /api/v1/voice/transcribe` endpoint must
+> accept one multipart audio upload (mp3, wav, m4a, flac, webm), enforce a
+> conservative configurable size limit, reject empty/oversized/unsupported
+> files with typed errors, never accept remote audio URLs, never persist
+> audio or transcripts, never retain uploaded audio after the request, and
+> never log filenames, audio bytes, transcripts, or symptoms. A small STT
+> provider abstraction with Groq Whisper (`whisper-large-v3` default) as
+> the real implementation, kept outside the API route, with explicit
+> timeout/error handling and no fabricated transcripts on failure. Tests
+> must use a fake/mocked provider and never call Groq. The Streamlit UI
+> needs an audio uploader, a "Transcribe audio" action, an editable
+> transcript with a fixed review message, and an explicit confirmation
+> step before the transcript is ever forwarded — never auto-submitted —
+> resetting confirmation whenever a new file is selected, while preserving
+> every existing UI element (specialty dropdown, emergency warning,
+> developer settings, demo example, routing/provider results). STT only —
+> no TTS, no diagnosis/urgency scoring, no autonomous emergency detection,
+> no vision, no React/auth/booking/migration. `Notes/` and the existing
+> untracked `audio.mp3` must not be modified or staged.
+>
+> Groq's real SDK signature was confirmed live via `inspect.signature()`
+> (`client.audio.transcriptions.create`, accepting a `(filename, bytes,
+> content_type)` file tuple and an `extra="allow"` response model) rather
+> than assumed, confirming `whisper-large-v3` is SDK-compatible. The
+> provider (`app/providers/speech_to_text/groq.py`) raises
+> `GroqTranscriptionError` on any SDK exception or empty/blank result — it
+> never returns placeholder text. `app/services/voice_transcription_service.py`
+> validates uploads (empty/oversized/unsupported extension) before any
+> provider call and wraps provider failures into `TranscriptionProviderError`,
+> mirroring Phase 1D's "optional real-provider call, always bounded, never
+> exercised in tests" pattern used for Groq specialty routing.
+> `app/api/v1/voice.py` maps each typed error to a specific status code
+> (422 empty/unsupported, 413 oversized, 503 not-configured/provider-failed)
+> and logs only safe operational metadata (transcription id, model,
+> status, language, byte count, timing) — proven by a `caplog` test using
+> synthetic filename/transcript markers.
+>
+> On the Streamlit side, `resolve_confirmed_voice_transcript()` was
+> extracted into `api_client.py` as a small, directly unit-testable
+> function (transcript is returned only when `confirmed=True`, and blank/
+> whitespace-only transcripts are treated as absent even if confirmed) —
+> this keeps the "never auto-submit an unconfirmed transcript" rule
+> testable without relying on Streamlit's `AppTest` file-upload simulation,
+> which proved unreliable (timed out) for this Streamlit version.
+> `build_navigation_payload()` gained `voice_transcript`/`voice_language`
+> parameters that populate the existing Phase 1C `voice_input` field only
+> when a transcript is actually supplied. `app.py`'s new "Voice intake
+> (optional)" section tracks the uploaded file's Streamlit `file_id` to
+> detect a newly selected file and reset the transcript/confirmation state
+> before the transcript text area and confirmation checkbox are
+> instantiated for that run.
+>
+> One deliberate, documented limitation carried over unchanged from
+> Phase 1D: `specialty_routing_service.route_to_specialty()` only reads
+> `symptoms`/`main_concern` for keyword matching, not
+> `voice_input.transcript` — a voice-only submission (no typed text, no
+> preferred specialty) reaches `ready_for_multimodal_processing` but
+> routing reports `unmatched`. Fixing that would mean changing Phase 1D's
+> routing service, which was out of scope ("avoid unrelated abstractions
+> or refactoring"); the UI already surfaces an honest "no specialty
+> matched" message in that case rather than hiding it.
+>
+> 40 new tests added (16 `test_voice_transcription_service.py`, 13
+> `test_voice_api.py`, 11 `test_streamlit_api_client.py` additions), for
+> 320 total (280 + 40). No Alembic migration (head unchanged); `.env.example`
+> gained `GROQ_STT_TIMEOUT_SECONDS` and `VOICE_MAX_UPLOAD_BYTES`, and
+> `GROQ_STT_MODEL`'s documented default changed from `whisper-large-v3-turbo`
+> to `whisper-large-v3` for transcription accuracy over latency/cost in a
+> medical-navigation intake context.

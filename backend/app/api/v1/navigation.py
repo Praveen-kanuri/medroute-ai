@@ -18,20 +18,11 @@ from app.config.settings import Settings, get_settings
 from app.db.session import get_db_session
 from app.schemas.multimodal_intake import IntakeStatus, MultimodalIntakeRequest
 from app.schemas.navigation import NavigationResponse, SpecialtyRoutingOut
-from app.schemas.provider_search import (
-    NPPES_DISCLAIMER,
-    AppliedFilters,
-    PaginationOut,
-    ProviderLocationOut,
-    ProviderResultOut,
-    ProviderSearchResponse,
-    SpecialtyOut,
-)
+from app.schemas.provider_search import ProviderSearchResponse
 from app.services.multimodal_intake_service import evaluate_intake
-from app.services.provider_ranking import provider_display_name
 from app.services.provider_search_service import (
     DEFAULT_LIMIT,
-    ProviderSearchPage,
+    build_provider_search_response,
     search_providers_page,
 )
 from app.services.specialty_routing_service import route_to_specialty
@@ -44,52 +35,6 @@ MEDIA_UNAVAILABLE_NOTE = (
     "Image/video analysis is not available in this demo. Only text and voice-transcript "
     "content were used for routing."
 )
-
-
-def _build_provider_search_response(
-    page: ProviderSearchPage, *, specialty_slug: str
-) -> ProviderSearchResponse:
-    """Map a provider-search page to the same response shape GET
-    /api/v1/providers/search uses. Kept local to avoid coupling this new
-    endpoint's response format to unrelated changes in that endpoint."""
-    results = [
-        ProviderResultOut(
-            npi=row.npi,
-            display_name=provider_display_name(row),
-            entity_type_code=row.entity_type_code,
-            specialty=(
-                SpecialtyOut(
-                    slug=row.specialty_slug,
-                    display_name=row.specialty_display_name or "",
-                    description=row.specialty_description,
-                )
-                if row.specialty_slug is not None
-                else None
-            ),
-            taxonomy_code=row.taxonomy_code,
-            is_primary_taxonomy=row.is_primary_taxonomy,
-            practice_location=(
-                ProviderLocationOut(
-                    address_line_1=row.location_address_line_1,
-                    address_line_2=row.location_address_line_2,
-                    city=row.location_city,
-                    state=row.location_state,
-                    postal_code=row.location_postal_code,
-                    telephone_number=row.location_telephone_number,
-                )
-                if row.location_address_purpose is not None
-                else None
-            ),
-            last_update_date=row.last_update_date,
-        )
-        for row in page.rows
-    ]
-    return ProviderSearchResponse(
-        filters=AppliedFilters(specialty=specialty_slug),
-        pagination=PaginationOut(limit=page.limit, offset=page.offset, has_more=page.has_more),
-        results=results,
-        disclaimer=NPPES_DISCLAIMER,
-    )
 
 
 @router.post(
@@ -125,6 +70,7 @@ async def navigate(
             preferred_specialty=payload.preferred_specialty,
             symptoms=payload.symptoms,
             main_concern=payload.main_concern,
+            voice_transcript=payload.voice_input.transcript if payload.voice_input else None,
             settings=settings,
         )
         routing_out = SpecialtyRoutingOut(
@@ -138,7 +84,7 @@ async def navigate(
             page = await search_providers_page(
                 session, specialty_slug=routing_result.specialty_slug, limit=DEFAULT_LIMIT
             )
-            provider_search_out = _build_provider_search_response(
+            provider_search_out = build_provider_search_response(
                 page, specialty_slug=routing_result.specialty_slug
             )
 

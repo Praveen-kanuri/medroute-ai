@@ -101,6 +101,43 @@ def test_voice_only_ready_for_multimodal_processing() -> None:
     assert response.multimodal_status.text_received is False
 
 
+def test_voice_transcript_with_explicit_duration_skips_clarification() -> None:
+    # Phase 2A follow-up fix: an explicit duration stated in a confirmed
+    # transcript must satisfy the "duration" requirement on its own, with
+    # no structured Duration field and no follow-up needed.
+    request = MultimodalIntakeRequest(
+        voice_input=VoiceInput(transcript="I have had a cough for the past three days."),
+    )
+    response = evaluate_intake(request)
+    assert response.status == IntakeStatus.READY_FOR_MULTIMODAL_PROCESSING
+    assert "duration" not in response.missing_fields
+    assert response.normalized_intake.duration == Duration(value=3, unit=DurationUnit.DAYS)
+
+
+def test_voice_transcript_with_ambiguous_duration_still_needs_clarification() -> None:
+    # An ambiguous phrase ("for a while") must never be guessed at — the
+    # response must still ask for duration via the normal follow-up path.
+    request = MultimodalIntakeRequest(
+        voice_input=VoiceInput(transcript="I have had a cough for a while."),
+    )
+    response = evaluate_intake(request)
+    assert response.status == IntakeStatus.NEEDS_CLARIFICATION
+    assert "duration" in response.missing_fields
+    assert response.normalized_intake.duration is None
+
+
+def test_structured_duration_takes_precedence_over_transcript_extraction() -> None:
+    # If the caller already supplied a structured Duration, it must win
+    # even when the transcript also contains an extractable expression —
+    # extraction only ever fills a gap, never overrides explicit input.
+    request = MultimodalIntakeRequest(
+        voice_input=VoiceInput(transcript="I have had a cough for the past three days."),
+        duration=Duration(value=2, unit=DurationUnit.WEEKS),
+    )
+    response = evaluate_intake(request)
+    assert response.normalized_intake.duration == Duration(value=2, unit=DurationUnit.WEEKS)
+
+
 def test_vision_only_ready_for_multimodal_processing() -> None:
     request = MultimodalIntakeRequest(
         vision_inputs=VisionInputs(image_urls=["https://media.example.org/intake/a.jpg"]),

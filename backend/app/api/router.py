@@ -1,6 +1,16 @@
 from fastapi import APIRouter
 
-from app.api.v1 import health, intake, navigation, providers, readiness, specialties, system
+from app.api.v1 import (
+    conversation,
+    health,
+    intake,
+    navigation,
+    providers,
+    readiness,
+    specialties,
+    system,
+    voice,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -10,3 +20,5 @@ api_router.include_router(specialties.router, prefix="/api/v1")
 api_router.include_router(providers.router, prefix="/api/v1")
 api_router.include_router(intake.router, prefix="/api/v1")
 api_router.include_router(navigation.router, prefix="/api/v1")
+api_router.include_router(voice.router, prefix="/api/v1")
+api_router.include_router(conversation.router, prefix="/api/v1")

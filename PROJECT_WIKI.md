@@ -85,9 +85,9 @@ directory, appointment slots, bookings).
 | `ingestion/` | NPPES CSV mapping (all 15 taxonomy slots), transformation/validation, chunked streaming upsert service, CLI (`python -m app.ingestion.nppes`) | Validated against a small fixture + a bounded real-file pilot — not the national dataset |
 | `catalog/` | Sourced NUCC specialty seed data, idempotent seeder (`python -m app.catalog.seed_specialties`) | 10 specialties, small & transparent by design |
 | `repositories/` | Single async provider-search query (window-function deduplication, no N+1) | `provider_repository.py` |
-| `services/` | `provider_ranking.py` + `provider_search_service.py` (Phase 1B), `multimodal_intake_service.py` (Phase 1C, pure), and `specialty_routing_service.py` (Phase 1D: deterministic keyword routing by default, optional catalog-validated Groq path) | No LLM call unless `ROUTING_MODE=groq` + a real key |
+| `services/` | `provider_ranking.py` + `provider_search_service.py` (Phase 1B), `multimodal_intake_service.py` (Phase 1C, pure), `specialty_routing_service.py` (Phase 1D: deterministic keyword routing by default, optional catalog-validated Groq path), and `voice_transcription_service.py` (Phase 2A: upload validation + transcription orchestration, provider-agnostic) | No LLM call unless `ROUTING_MODE=groq` + a real key; voice transcription requires a real `GROQ_API_KEY` |
 | `graph/` | LangGraph state machine: intake → routing → doctor search → booking | Empty package, future milestone |
-| `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done, real integrations future |
+| `providers/` | Abstract interfaces for external capabilities (LLM, STT, TTS), each with a fake implementation | Interfaces + fakes done; real `SpeechToTextProvider` (Groq Whisper, Phase 2A) live; real LLM/TTS integrations future |
 | `safety/` | Disclaimer text + user-declared emergency messaging | Autonomous/inferred emergency detection remains future work |
 | `tools/` | LangGraph tool functions (e.g., doctor search) | Empty package, future milestone |
 | `config/` | Environment-driven settings via pydantic-settings | Done |
@@ -137,16 +137,19 @@ Abstract, async interfaces in `backend/app/providers/<kind>/base.py`, each
 with a deterministic fake implementation in `<kind>/fake.py` for tests and
 local development without needing any API keys.
 
-| Provider | Method | Fake behavior |
-|---|---|---|
-| `TextLLMProvider` | `async generate(prompt: str) -> str` | Echoes the prompt: `"[fake-llm-response] echo: {prompt}"` |
-| `SpeechToTextProvider` | `async transcribe(audio_bytes: bytes) -> str` | Reports byte count: `"[fake-transcript] {n} bytes received"` |
-| `TextToSpeechProvider` | `async synthesize(text: str) -> bytes` | Returns `f"[fake-audio]{text}".encode()` |
+| Provider | Method | Fake behavior | Real implementation |
+|---|---|---|---|
+| `TextLLMProvider` | `async generate(prompt: str) -> str` | Echoes the prompt: `"[fake-llm-response] echo: {prompt}"` | None yet (Phase 1D's Groq routing calls the Groq SDK directly inside `specialty_routing_service.py`, not through this interface) |
+| `SpeechToTextProvider` | `async transcribe(audio_bytes: bytes, *, filename=None, content_type=None, language=None) -> str` | Reports byte count: `"[fake-transcript] {n} bytes received"` | `GroqSpeechToTextProvider` (`providers/speech_to_text/groq.py`, Phase 2A) — Groq hosted Whisper (`whisper-large-v3` by default); raises `GroqTranscriptionError` rather than fabricating a transcript on failure or an empty result |
+| `TextToSpeechProvider` | `async synthesize(text: str) -> bytes` | Returns `f"[fake-audio]{text}".encode()` | None yet (deferred to Phase 4) |
 
 Design intent: callers depend only on the abstract base class, so real
-integrations (Groq for LLM, Deepgram for speech) can be dropped in later
+integrations (Groq for LLM/STT, Deepgram for TTS) can be dropped in later
 without changing calling code. Contracts are deliberately minimal — no
 undocumented provider-specific `**kwargs`, no generic provider framework.
+The one exception noted above (Groq specialty routing bypassing
+`TextLLMProvider`) predates this session and is called out here rather than
+silently glossed over.
 
 ## 7. API surface
 
@@ -161,6 +164,7 @@ Versioned under `/api/v1`, aggregated in `backend/app/api/router.py`.
 | `GET /api/v1/providers/search` | Deterministic (no-LLM) provider search | Filters: specialty, taxonomy_code, state, city, postal_code, entity_type, name; paginated (`limit`/`offset`, max 100); always includes an NPPES disclaimer; zero matches → 200 with empty `results`, never an error |
 | `POST /api/v1/intake/validate` | Stateless, non-diagnostic multimodal intake validation | Accepts text/voice-transcript/image-video-URL-references; returns `emergency` / `needs_clarification` / `ready_for_multimodal_processing`; nothing persisted; media URLs never fetched; unknown fields → 422 |
 | `POST /api/v1/navigate` | End-to-end demo: intake → safety gate → controlled specialty routing → provider search | Composes the two endpoints above; emergency/clarification precedence unchanged; routing only ever selects a catalog specialty; `media_note` when vision input was supplied; stateless, no migration |
+| `POST /api/v1/voice/transcribe` | Speech-to-text only: transcribe one uploaded audio file (Phase 2A) | Multipart upload (mp3/wav/m4a/flac/webm), conservative size limit; requires `GROQ_API_KEY` (503 if missing); never fabricates a transcript on provider failure or empty result; no remote audio URLs; audio and transcript never persisted; typed response (`transcription_id`, `transcript`, `language`, `model`, `status`) |
 
 ## 8. Configuration
 
@@ -173,12 +177,15 @@ commit a real `.env`).
 | `APP_ENV` | `development` | |
 | `LOG_LEVEL` | `INFO` | |
 | `PROVIDER_MODE` | `fake` | Fake providers require no credentials; this is the only supported mode in Phase 0 |
-| `GROQ_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake` |
-| `DEEPGRAM_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake` |
+| `GROQ_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake`; required for `ROUTING_MODE=groq` and for `POST /api/v1/voice/transcribe` (which returns 503 without it) |
+| `DEEPGRAM_API_KEY` | `None` (optional) | Not required while `PROVIDER_MODE=fake`; unused until a future TTS milestone (Phase 4) |
 | `DATABASE_URL` | `None` (optional) | `SecretStr`; async (`postgresql+asyncpg://…`); required only for persistence and `/api/v1/health/readiness` |
 | `DATABASE_ECHO` | `false` | SQLAlchemy engine SQL echo, local debugging only |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | — | Consumed by Docker Compose's `postgres` service; must match `DATABASE_URL`'s credentials |
 | `ROUTING_MODE` | `deterministic` | Phase 1D specialty routing. `groq` additionally tries a catalog-validated structured Groq call (requires a real `GROQ_API_KEY`) before falling back to deterministic |
+| `GROQ_STT_MODEL` | `whisper-large-v3` | Phase 2A: Groq Whisper model used by `POST /api/v1/voice/transcribe` |
+| `GROQ_STT_TIMEOUT_SECONDS` | `30.0` | Phase 2A: per-request timeout for the Groq transcription call |
+| `VOICE_MAX_UPLOAD_BYTES` | `10000000` | Phase 2A: max accepted audio upload size (bytes), enforced before any provider call |
 
 The app starts and serves requests with **no credentials set at all**, as
 long as it stays in fake mode — this is covered by tests
@@ -294,10 +301,11 @@ uv run pytest
 | **Phase 1A** | NPPES provider-directory ingestion foundation: `providers`/`provider_locations`/`provider_taxonomies`/`ingestion_runs` schema, chunked streaming CSV ingestion, idempotent upserts, CLI import — validated against a small fixture, not the national dataset | Complete |
 | **Phase 1B** | Deterministic provider discovery: all 15 NPPES taxonomy slots, a small NUCC-sourced specialty catalog, `GET /api/v1/specialties` + `GET /api/v1/providers/search` with explainable no-LLM ranking and pagination — validated against a fixture and a bounded real-file pilot | Complete |
 | **Phase 1C** | Multimodal intake foundation: stateless `POST /api/v1/intake/validate` accepting text/voice-transcript/image-video-URL-references, user-declared emergency precedence, deterministic `emergency`/`needs_clarification`/`ready_for_multimodal_processing` states — no interpretation, no persistence | Complete |
-| **Phase 1D** | Controlled specialty routing & navigation demo: `POST /api/v1/navigate` composes Phase 1C intake + new deterministic (default) / optional catalog-validated Groq specialty routing + Phase 1B provider search; Streamlit demo UI (`backend/streamlit_app/`) — no vision processing, stateless | **Current** |
+| **Phase 1D** | Controlled specialty routing & navigation demo: `POST /api/v1/navigate` composes Phase 1C intake + new deterministic (default) / optional catalog-validated Groq specialty routing + Phase 1B provider search; Streamlit demo UI (`backend/streamlit_app/`) — no vision processing, stateless | Complete |
+| **Phase 2A** | Real voice intake: `POST /api/v1/voice/transcribe` (Groq Whisper, `whisper-large-v3` default), a real `SpeechToTextProvider` implementation, and a Streamlit voice workflow requiring explicit transcript review/confirmation before it flows into the existing Phase 1C `voice_input` contract → `/api/v1/navigate` — STT only, no TTS, no persistence | Complete |
 | **Phase 2** | LLM-backed routing: real `TextLLMProvider` (Groq), LangGraph intake→routing graph, safety subsystem (emergency keyword/escalation detection) | Planned |
 | **Phase 3** | Booking simulation: `BookingRequest` → `BookingConfirmation` end-to-end (still simulated, not real scheduling) | Planned |
-| **Phase 4** | Multimodal input: real `SpeechToTextProvider` (Deepgram) + `TextToSpeechProvider`, voice-based intake | Planned |
+| **Phase 4** | Text-to-speech & vision input: real `TextToSpeechProvider` (Deepgram Aura) and real image/video interpretation — speech-to-text was already delivered in Phase 2A | Planned |
 | **Phase 5** | Production frontend: React/TypeScript client consuming the FastAPI backend (separate from, does not replace, the Phase 1D Streamlit demo) | Planned |
 | Later (unscheduled) | Authentication, deployment/hosting | Unscheduled |
 
@@ -356,6 +364,11 @@ uv run pytest
   Health Care Provider Taxonomy Code Set MedRoute's specialty catalog maps
   to. See `app/catalog/nucc_specialties.py` for the exact codes, version,
   and access date.
+- **Confirmed transcript (Phase 2A)** — A speech-to-text transcript the
+  user has explicitly reviewed and confirmed accurate in the Streamlit UI.
+  MedRoute AI never auto-submits an unconfirmed transcript for routing;
+  selecting a new audio file always resets any prior confirmation. See
+  `streamlit_app/api_client.py`'s `resolve_confirmed_voice_transcript()`.
 
 ---
 

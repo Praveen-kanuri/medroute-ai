@@ -166,6 +166,69 @@ async def test_groq_mode_rejects_slug_outside_catalog(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_voice_transcript_alone_routes_to_specialty() -> None:
+    # Phase 2A: a confirmed voice transcript with no typed symptoms/main_concern
+    # must still be able to drive deterministic keyword matching.
+    result = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=[],
+        main_concern=None,
+        voice_transcript="chest pain and heart palpitations",
+        settings=_settings(),
+    )
+    assert result.specialty_slug == "cardiology"
+    assert result.method == RoutingMethod.KEYWORD_MATCH
+
+
+@pytest.mark.asyncio
+async def test_omitted_voice_transcript_behaves_like_text_only() -> None:
+    # Explicitly passing voice_transcript=None must be identical to the
+    # pre-Phase-2A behavior of omitting the parameter entirely.
+    with_default = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["chest pain"],
+        main_concern=None,
+        settings=_settings(),
+    )
+    with_explicit_none = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["chest pain"],
+        main_concern=None,
+        voice_transcript=None,
+        settings=_settings(),
+    )
+    assert with_default == with_explicit_none
+    assert with_default.specialty_slug == "cardiology"
+
+
+@pytest.mark.asyncio
+async def test_combined_symptoms_and_voice_transcript_are_scored_together() -> None:
+    # symptoms alone ("knee pain") would match orthopaedic-surgery (score 1 on
+    # "knee"). A confirmed voice transcript contributing two cardiology
+    # keywords ("chest", "palpitations") must combine with, not replace, that
+    # signal and win on total keyword-overlap score (2 > 1) — proving the two
+    # sources are merged into one token set rather than one silently
+    # overriding the other.
+    symptoms_only = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["knee pain"],
+        main_concern=None,
+        settings=_settings(),
+    )
+    assert symptoms_only.specialty_slug == "orthopaedic-surgery"
+
+    combined = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["knee pain"],
+        main_concern=None,
+        voice_transcript="chest palpitations",
+        settings=_settings(),
+    )
+    assert combined.specialty_slug == "cardiology"
+    assert combined.method == RoutingMethod.KEYWORD_MATCH
+
+
+@pytest.mark.asyncio
 async def test_groq_mode_accepts_valid_catalog_slug(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeMessage:
         content = '{"specialty_slug": "dermatology"}'

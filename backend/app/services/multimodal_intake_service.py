@@ -9,6 +9,7 @@ import uuid
 
 from app.safety.constants import EMERGENCY_SAFETY_MESSAGE, INTAKE_DISCLAIMER
 from app.schemas.multimodal_intake import (
+    Duration,
     IntakeStatus,
     MultimodalIntakeRequest,
     MultimodalIntakeResponse,
@@ -16,6 +17,7 @@ from app.schemas.multimodal_intake import (
     NextAction,
     NormalizedIntake,
 )
+from app.services.duration_extraction import extract_duration_from_transcript
 
 _CONCERN_QUESTION = (
     "Please describe your main concern or provide a text, voice-transcript, image, or video input."
@@ -48,6 +50,21 @@ def _is_emergency(request: MultimodalIntakeRequest) -> bool:
     return request.emergency_concern or bool(request.emergency_signals)
 
 
+def _effective_duration(request: MultimodalIntakeRequest) -> Duration | None:
+    """The structured duration to use: the user-supplied field if present,
+    otherwise a conservative deterministic extraction from a confirmed
+    voice transcript (see app.services.duration_extraction). Returns None
+    whenever neither is available or the transcript's phrasing is
+    ambiguous — callers must then fall back to asking the user directly,
+    never guess."""
+    if request.duration is not None:
+        return request.duration
+    if _has_voice(request):
+        assert request.voice_input is not None
+        return extract_duration_from_transcript(request.voice_input.transcript)
+    return None
+
+
 def evaluate_intake(request: MultimodalIntakeRequest) -> MultimodalIntakeResponse:
     """Evaluate a validated intake request into a typed response.
 
@@ -61,6 +78,7 @@ def evaluate_intake(request: MultimodalIntakeRequest) -> MultimodalIntakeRespons
     video_count = _video_count(request)
     vision_received = image_count > 0 or video_count > 0
     concern_present = text_received or voice_received or vision_received
+    duration = _effective_duration(request)
 
     missing_fields: list[str] = []
     if _is_emergency(request):
@@ -73,7 +91,7 @@ def evaluate_intake(request: MultimodalIntakeRequest) -> MultimodalIntakeRespons
     else:
         if not concern_present:
             missing_fields.append("concern")
-        if request.duration is None:
+        if duration is None:
             missing_fields.append("duration")
 
         if missing_fields:
@@ -95,7 +113,7 @@ def evaluate_intake(request: MultimodalIntakeRequest) -> MultimodalIntakeRespons
     normalized_intake = NormalizedIntake(
         symptoms=request.symptoms,
         main_concern=request.main_concern,
-        duration=request.duration,
+        duration=duration,
         location=request.location,
         preferred_specialty=request.preferred_specialty,
         emergency_concern=request.emergency_concern,

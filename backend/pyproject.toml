@@ -17,6 +17,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "alembic>=1.18.5",
     "streamlit>=1.60.0",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

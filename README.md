@@ -11,6 +11,15 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
+Phase 2A: real voice intake with Groq Whisper.
+`POST /api/v1/voice/transcribe` accepts one uploaded audio file and returns
+a raw speech-to-text transcript — never persisted, never auto-submitted.
+The Streamlit demo UI requires the user to review and explicitly confirm
+the transcript before it flows through the existing Phase 1C `voice_input`
+contract into Phase 1D's `POST /api/v1/navigate` (intake → specialty
+routing → provider search). See [Voice intake](#voice-intake-phase-2a)
+below.
+
 Phase 1D: controlled specialty routing & navigation demo.
 `POST /api/v1/navigate` composes the Phase 1C intake contract, a new
 deterministic (no-LLM-by-default) specialty router that only ever selects
@@ -399,6 +408,10 @@ uv run streamlit run streamlit_app/app.py
   media-unavailable/routed/provider-result states and the non-diagnostic
   and emergency disclaimers. It does not persist or log anything itself —
   each submission is a single forwarded request.
+- A **Voice intake (optional)** section (Phase 2A) lets you upload an
+  audio file and transcribe it via Groq Whisper — see [Voice
+  intake](#voice-intake-phase-2a) below for the full workflow and its
+  confirmation requirement.
 
 **Run the Streamlit API client tests** (payload construction + the HTTP
 calls, against a mock transport — no real network):
@@ -415,6 +428,56 @@ description, and model-evaluation fixtures remain future work — see
 [docs/architecture.md](docs/architecture.md)'s "Beyond Phase 1D" notes.
 Appointment scheduling/booking, authentication, and the production
 frontend are separate, later milestones.
+
+## Voice intake (Phase 2A)
+
+`POST /api/v1/voice/transcribe` accepts one multipart audio upload and
+returns a raw speech-to-text transcript using Groq's hosted Whisper models.
+This endpoint performs transcription only — it never interprets, diagnoses,
+or scores urgency, and the returned transcript is not verified medical
+information.
+
+- **Supported formats:** mp3, wav, m4a, flac, webm.
+- **Size limit:** `VOICE_MAX_UPLOAD_BYTES` (default 10,000,000 bytes / 10 MB).
+- **Requires `GROQ_API_KEY`** (see `.env.example`). Returns `503` if not
+  configured, or if the Groq call fails/times out — it never fabricates a
+  transcript on failure.
+- **Model:** `GROQ_STT_MODEL` (default `whisper-large-v3`); timeout via
+  `GROQ_STT_TIMEOUT_SECONDS` (default 30s).
+- **No remote audio URLs** — the file must be uploaded directly.
+- **Nothing is persisted.** Audio and transcripts are never written to the
+  database or retained after the request; only safe operational metadata
+  (transcription id, model, status, language, byte count, timing) is
+  logged — never filenames, audio bytes, transcripts, or symptoms.
+- **Speech-to-text only.** No text-to-speech in Phase 2A (deferred, see
+  `docs/roadmap.md`'s Phase 4).
+
+**Example request** (using the repo's local `audio.mp3`, if present and not
+committed — never stage or commit real or test audio files):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/voice/transcribe \
+  -F "file=@audio.mp3"
+```
+
+**Streamlit confirmation workflow:** upload an audio file, click
+**"Transcribe audio"**, then review the editable transcript. The UI always
+shows: *"Please review and correct the transcript before continuing.
+Speech recognition may contain errors."* The transcript is only included in
+the `/api/v1/navigate` request after you check **"I have reviewed this
+transcript and confirm it is ready to use"** — an unconfirmed or
+unreviewed transcript is never auto-submitted. Selecting a new audio file
+always resets any prior transcript and confirmation. Confirmed transcripts
+are sent via the existing Phase 1C `voice_input` field alongside (not
+replacing) the text symptom/main-concern fields, which remain independently
+usable.
+
+**Run voice intake tests** (a fake/mocked provider only — these never call
+Groq):
+
+```bash
+uv run pytest tests/test_voice_transcription_service.py tests/test_voice_api.py
+```
 
 ## Validation
 

@@ -39,6 +39,7 @@ class DurationUnit(StrEnum):
     DAYS = "days"
     WEEKS = "weeks"
     MONTHS = "months"
+    YEARS = "years"
 
 
 class EmergencySignal(StrEnum):
@@ -268,7 +269,12 @@ class NextAction(BaseModel):
 class NormalizedIntake(BaseModel):
     """Echoes back only validated, normalized, user-supplied fields — no
     inferred symptoms, visual observations, medical conclusions, or
-    generated specialty."""
+    generated specialty. The one narrow exception is `duration`: when not
+    supplied structurally, it may be a conservative, deterministic
+    extraction of an explicit time-span the user stated in their own words
+    in a confirmed voice transcript (see
+    app.services.duration_extraction) — never a diagnosis, treatment,
+    urgency, or emergency inference."""
 
     symptoms: list[str]
     main_concern: str | None
