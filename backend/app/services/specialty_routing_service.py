@@ -64,7 +64,10 @@ def _tokenize(text: str) -> set[str]:
 
 
 def _deterministic_match(
-    symptoms: Sequence[str], main_concern: str | None, voice_transcript: str | None
+    symptoms: Sequence[str],
+    main_concern: str | None,
+    voice_transcript: str | None,
+    vision_observation_text: str | None = None,
 ) -> SpecialtySeed | None:
     """Best-scoring keyword overlap. Returns None when nothing scores > 0."""
     tokens: set[str] = set()
@@ -74,6 +77,8 @@ def _deterministic_match(
         tokens |= _tokenize(main_concern)
     if voice_transcript:
         tokens |= _tokenize(voice_transcript)
+    if vision_observation_text:
+        tokens |= _tokenize(vision_observation_text)
     if not tokens:
         return None
 
@@ -88,9 +93,14 @@ def _deterministic_match(
 
 
 def _deterministic_route(
-    symptoms: Sequence[str], main_concern: str | None, voice_transcript: str | None
+    symptoms: Sequence[str],
+    main_concern: str | None,
+    voice_transcript: str | None,
+    vision_observation_text: str | None = None,
 ) -> SpecialtyRoutingResult:
-    matched = _deterministic_match(symptoms, main_concern, voice_transcript)
+    matched = _deterministic_match(
+        symptoms, main_concern, voice_transcript, vision_observation_text
+    )
     if matched is None:
         return SpecialtyRoutingResult(
             specialty_slug=None,
@@ -155,6 +165,7 @@ async def route_to_specialty(
     symptoms: Sequence[str],
     main_concern: str | None,
     voice_transcript: str | None = None,
+    vision_observation_text: str | None = None,
     settings: Settings,
 ) -> SpecialtyRoutingResult:
     """Decide which catalog specialty (if any) applies. Never diagnoses.
@@ -166,9 +177,15 @@ async def route_to_specialty(
     transcript (see MultimodalIntakeRequest.voice_input.transcript) and is
     folded into the same deterministic keyword matching as symptoms/
     main_concern — it is never used to detect an emergency or infer
-    anything beyond a specialty keyword match. The optional Groq-backed
-    path below does not consider it: that path is off by default, never
-    exercised in tests, and out of scope for this change.
+    anything beyond a specialty keyword match.
+
+    vision_observation_text (Phase 2C) is the flattened, already
+    schema-validated text of controlled VisionObservation objects (see
+    app.schemas.vision) from an uploaded image or sampled video frames.
+    It is folded into the same deterministic keyword matching exactly like
+    voice_transcript above — never used to detect an emergency, and never
+    passed through the optional Groq-backed path below (off by default,
+    never exercised in tests, and out of scope for this change).
     """
     if preferred_specialty is not None:
         seed = _CATALOG_BY_SLUG.get(preferred_specialty)
@@ -191,4 +208,4 @@ async def route_to_specialty(
         if groq_result is not None:
             return groq_result
 
-    return _deterministic_route(symptoms, main_concern, voice_transcript)
+    return _deterministic_route(symptoms, main_concern, voice_transcript, vision_observation_text)

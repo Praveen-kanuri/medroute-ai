@@ -30,18 +30,31 @@ and simulates appointment booking.
 backend/app/
   api/            FastAPI routers (versioned under /api/v1)
   config/         Environment-driven settings (pydantic-settings)
-  graph/          Phase 2B LangGraph conversation graph (state.py, nodes.py, build.py)
+  graph/          LangGraph multi-agent conversation graph (state.py, nodes.py,
+                    build.py) — supervisor_router -> conversation_agent |
+                    vision_agent | medical_intake_agent -> safety_gate ->
+                    clarification -> clinical_intake_agent (Phase 3A, a
+                    no-op unless a known complaint protocol matches) ->
+                    clinical_red_flag_gate -> specialty_routing_agent ->
+                    provider_search_agent -> response_agent -> text_to_speech
   providers/      Abstract provider interfaces + fake implementations
     llm/                TextLLMProvider
-    speech_to_text/      SpeechToTextProvider (real: Groq Whisper)
-    text_to_speech/      TextToSpeechProvider (real: Deepgram Aura)
-  safety/         Emergency disclaimers + user-declared emergency constants
+    speech_to_text/      SpeechToTextProvider (real: Deepgram primary, Groq fallback)
+    text_to_speech/      TextToSpeechProvider (real: Deepgram primary, Groq fallback)
+    vision/              VisionProvider (real: Groq multimodal chat model)
+  safety/         Emergency disclaimers + user-declared emergency constants +
+                    shared forbidden-medical-claim-term lists + Phase 3A's
+                    dedicated deterministic red-flag rules (red_flag_rules.py)
   schemas/        Pydantic v2 domain models (intake, multimodal_intake, routing,
-                    doctor, booking, provider_search, voice_intake, conversation)
+                    doctor, booking, provider_search, voice_intake, conversation,
+                    vision, clinical_context)
   services/       Pure business logic (provider ranking/search, multimodal intake,
                     deterministic specialty routing, voice transcription orchestration,
                     duration extraction, response composition, text-to-speech
-                    orchestration, conversation-graph orchestration)
+                    orchestration, conversation-graph orchestration, media upload
+                    validation/normalization, vision-provider orchestration,
+                    per-complaint clinical-context intake (clinical_intake_service.py),
+                    negation-aware phrase classification (mention_classification_service.py))
   tools/          LangGraph tool implementations (future milestone)
   main.py         FastAPI app factory
 streamlit_app/    Lightweight demo UI (calls the API only; no logic of its own)
@@ -79,24 +92,45 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 2B — LangGraph conversational orchestration with spoken output. A
-stateless-per-turn `POST /api/v1/converse` endpoint runs a compiled
-LangGraph graph (`app/graph/`) that composes every existing service as a
-controlled tool: `normalize_intake` (Phase 1C `evaluate_intake`) ->
-`safety_gate` (user-declared emergency precedence only, never inferred
-from text) -> `clarification` (pauses via LangGraph's `interrupt()` when
-a required field is missing, reporting typed `missing_fields`) ->
-`specialty_routing` (Phase 1D deterministic routing) -> `provider_search`
-(Phase 1B deterministic search) -> `response_composition` (a concise,
-non-diagnostic summary; deterministic by default, optional validated Groq
-rephrasing) -> `text_to_speech` (optional, Deepgram Aura). A `thread_id` +
-an `InMemorySaver` checkpointer let the caller resume a paused
-clarification turn with a typed answer (`Command(resume=...)`), merging
-it into the same conversation state and looping back through
-`normalize_intake` — the confirmed voice transcript and every other
-intake field are preserved automatically; no re-upload or re-transcription
-is ever needed. `POST /api/v1/navigate` (Phase 1D) is unchanged and still
-available. Text-to-speech is best-effort: any missing configuration,
-oversized text, or provider failure returns no audio but always still
-returns the text response; tests always inject a fake TTS provider and
-never call Deepgram. See `docs/roadmap.md` for Phase 2C (vision input).
+Phase 3A — extensible per-complaint clinical-context intake and a
+dedicated, deterministic red-flag safety gate, vertically sliced through
+one complaint: unilateral/one-sided leg swelling. `POST /api/v1/converse`
+(and `/api/v1/media/analyze`) route through the multi-agent graph's
+`clinical_intake_agent` node, inserted between the existing `clarification`
+and `specialty_routing_agent` nodes — a complete no-op (falls straight
+through, exactly as before Phase 3A) for any concern matching no known
+protocol (`app/services/clinical_intake_service.py`'s `ClinicalProtocol`
+registry, currently one entry). For a matched protocol, it asks its own
+ordered questions one at a time via the same `interrupt()`/
+`Command(resume=...)` mechanism `clarification` already uses (self-looping
+via a conditional edge back to itself), skipping any question the original
+message already answered, and accepting either a typed
+(`clarification_answer.clinical_answer_text`) or spoken
+(`clarification_answer.voice_transcript`) answer through the existing
+resume path — no dedicated voice-UI change was needed.
+
+A dedicated `clinical_red_flag_gate` node (`app/safety/red_flag_rules.py`)
+runs immediately after the leg-swelling protocol's red-flag question is
+answered, always before specialty/provider routing — deterministic
+keyword/negation matching only (`app/services/mention_classification_service.py`),
+no model call, distinguishing affirmed ("I have chest pain") from negated
+("no chest pain") from unknown ("I'm not sure" — never treated as
+affirmed). An affirmed flag reuses the existing `is_emergency`/
+`EMERGENCY_SAFETY_MESSAGE` path unchanged; it never identifies a disease
+and never overrides the existing user-declared emergency precedence
+(checked first, unconditionally, by the pre-existing `safety_gate` node).
+
+Once a protocol's questions are all answered with no red flag affirmed, a
+bounded `ClinicalNavigationSummary` (`app/schemas/clinical_context.py`,
+`diagnosis`/`treatment_recommendation` always `None`) is produced from a
+small, reviewable per-protocol definition — never RAG, never scraped
+content — and exposed as `ConversationResponse.clinical_navigation`, folded
+into the existing response text and the Streamlit chat feed. Specialty
+candidates are drawn only from the existing Phase 1B/1D catalog (extended
+with a few leg-swelling-relevant keywords on Internal Medicine — no new
+specialty, no bypassed routing contract).
+
+`POST /api/v1/converse`, `POST /api/v1/navigate`, and `POST
+/api/v1/media/analyze` are otherwise unchanged. See `docs/roadmap.md` for
+the full Phase 3A entry (and the Phase 2C entry for image/video
+understanding, delivered earlier).

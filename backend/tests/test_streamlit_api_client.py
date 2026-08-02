@@ -9,19 +9,23 @@ import pytest
 
 from streamlit_app.api_client import (
     CONVERSE_PATH,
+    MEDIA_ANALYZE_PATH,
     NAVIGATE_PATH,
     SPECIALTIES_PATH,
     TRANSCRIBE_PATH,
+    analyze_media_via_api,
     build_clarification_resume_payload,
     build_conversation_payload,
     build_navigation_payload,
+    build_voice_turn_fingerprint,
     call_converse,
     call_navigate,
+    fingerprint_bytes,
     followup_fields_from_missing,
     list_specialties,
     merge_followup_answer_into_payload,
-    resolve_confirmed_voice_transcript,
     transcribe_audio_via_api,
+    voice_recording_changed,
 )
 
 
@@ -196,32 +200,137 @@ def test_build_payload_omits_voice_input_when_transcript_blank() -> None:
     assert "voice_input" not in payload
 
 
-# --- resolve_confirmed_voice_transcript: confirmation gating ----------------
+# --- voice_recording_changed: microphone "new recording" detection --------
 
 
-def test_resolve_confirmed_voice_transcript_requires_confirmation() -> None:
-    assert resolve_confirmed_voice_transcript(transcript="chest pain", confirmed=False) is None
+def test_voice_recording_changed_false_when_ids_match() -> None:
+    assert voice_recording_changed(previous_recording_id="abc", current_recording_id="abc") is False
 
 
-def test_resolve_confirmed_voice_transcript_returns_transcript_when_confirmed() -> None:
-    assert (
-        resolve_confirmed_voice_transcript(transcript="chest pain", confirmed=True) == "chest pain"
+def test_voice_recording_changed_true_for_a_new_recording() -> None:
+    assert voice_recording_changed(previous_recording_id="abc", current_recording_id="def") is True
+
+
+def test_voice_recording_changed_true_when_recorder_cleared() -> None:
+    assert voice_recording_changed(previous_recording_id="abc", current_recording_id=None) is True
+
+
+def test_voice_recording_changed_false_when_both_absent() -> None:
+    assert voice_recording_changed(previous_recording_id=None, current_recording_id=None) is False
+
+
+# --- fingerprint_bytes: stable SHA-256 recording fingerprint ----------------
+
+
+def test_fingerprint_bytes_is_stable_for_same_content() -> None:
+    assert fingerprint_bytes(b"same-audio-bytes") == fingerprint_bytes(b"same-audio-bytes")
+
+
+def test_fingerprint_bytes_differs_for_different_content() -> None:
+    assert fingerprint_bytes(b"recording-one") != fingerprint_bytes(b"recording-two")
+
+
+def test_fingerprint_bytes_is_a_sha256_hex_digest() -> None:
+    digest = fingerprint_bytes(b"synthetic-audio")
+    assert len(digest) == 64
+    assert all(c in "0123456789abcdef" for c in digest)
+
+
+# --- build_voice_turn_fingerprint: guarded voice-turn identity --------------
+
+
+def test_voice_turn_fingerprint_stable_for_same_inputs() -> None:
+    a = build_voice_turn_fingerprint(transcript="chest pain")
+    b = build_voice_turn_fingerprint(transcript="chest pain")
+    assert a == b
+
+
+def test_voice_turn_fingerprint_differs_for_different_transcript() -> None:
+    a = build_voice_turn_fingerprint(transcript="chest pain")
+    b = build_voice_turn_fingerprint(transcript="chest pain and dizziness")
+    assert a != b
+
+
+def test_voice_turn_fingerprint_trims_whitespace() -> None:
+    a = build_voice_turn_fingerprint(transcript="chest pain")
+    b = build_voice_turn_fingerprint(transcript="  chest pain  ")
+    assert a == b
+
+
+def test_voice_turn_fingerprint_differs_by_thread_id() -> None:
+    a = build_voice_turn_fingerprint(transcript="chest pain", thread_id="thread-1")
+    b = build_voice_turn_fingerprint(transcript="chest pain", thread_id="thread-2")
+    assert a != b
+
+
+def test_voice_turn_fingerprint_differs_by_clarification_answer() -> None:
+    a = build_voice_turn_fingerprint(
+        transcript="chest pain",
+        thread_id="thread-1",
+        clarification_answer={"duration": {"value": 2, "unit": "days"}},
+    )
+    b = build_voice_turn_fingerprint(
+        transcript="chest pain",
+        thread_id="thread-1",
+        clarification_answer={"duration": {"value": 3, "unit": "days"}},
+    )
+    assert a != b
+
+
+def test_voice_turn_fingerprint_multi_round_clarification_each_round_distinct() -> None:
+    # A multi-round clarification (duration answered, then concern answered)
+    # against the same thread_id/transcript must still produce a distinct
+    # fingerprint per round, so the second answer isn't mistaken for a
+    # repeat of the first.
+    round_one = build_voice_turn_fingerprint(
+        transcript="hmm",
+        thread_id="thread-1",
+        clarification_answer={"duration": {"value": 2, "unit": "days"}},
+    )
+    round_two = build_voice_turn_fingerprint(
+        transcript="hmm",
+        thread_id="thread-1",
+        clarification_answer={"main_concern": "itchy rash"},
+    )
+    assert round_one != round_two
+
+
+def test_transcribe_audio_accepts_a_microphone_recording(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Proves the microphone workflow uses the SAME transcription client
+    # function as before — st.audio_input returns a WAV-format UploadedFile,
+    # and transcribe_audio_via_api needs no change to accept it.
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "transcription_id": "mic-1",
+                "transcript": "chest pain and heart palpitations",
+                "language": "en",
+                "model": "whisper-large-v3",
+                "status": "completed",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_post(url: str, *, files: object, timeout: float) -> httpx.Response:
+        with httpx.Client(transport=transport) as client:
+            return client.post(url, files=files, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = transcribe_audio_via_api(
+        "http://backend.test",
+        b"synthetic-microphone-wav-bytes",
+        filename="audio.wav",
+        content_type="audio/wav",
     )
 
-
-def test_resolve_confirmed_voice_transcript_trims_whitespace() -> None:
-    assert (
-        resolve_confirmed_voice_transcript(transcript="  chest pain  ", confirmed=True)
-        == "chest pain"
-    )
-
-
-def test_resolve_confirmed_voice_transcript_treats_blank_as_none_even_if_confirmed() -> None:
-    assert resolve_confirmed_voice_transcript(transcript="   ", confirmed=True) is None
-
-
-def test_resolve_confirmed_voice_transcript_handles_none_transcript() -> None:
-    assert resolve_confirmed_voice_transcript(transcript=None, confirmed=True) is None
+    assert b"synthetic-microphone-wav-bytes" in captured["body"]  # type: ignore[operator]
+    assert result["transcript"] == "chest pain and heart palpitations"
 
 
 # --- transcribe_audio_via_api -------------------------------------------------
@@ -464,3 +573,81 @@ def test_call_converse_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(httpx.HTTPStatusError):
         call_converse("http://backend.test", {"thread_id": "unknown"})
+
+
+# --- analyze_media_via_api (Phase 2C) ----------------------------------
+
+
+def test_analyze_media_posts_multipart_with_intake_json_to_media_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "thread_id": "abc-123",
+                "status": "ready_for_multimodal_processing",
+                "missing_fields": [],
+                "clarification_questions": [],
+                "response_text": "Reviewed the uploaded image.",
+                "routing": None,
+                "provider_search": None,
+                "media_note": None,
+                "audio": None,
+                "disclaimer": "not a diagnosis",
+                "vision_observations": [],
+                "media_analysis_note": "Reviewed the uploaded image.",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_post(url: str, *, files: object, data: object, timeout: float) -> httpx.Response:
+        with httpx.Client(transport=transport) as client:
+            return client.post(url, files=files, data=data, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = analyze_media_via_api(
+        "http://backend.test",
+        b"synthetic-image-bytes",
+        filename="clip.jpg",
+        content_type="image/jpeg",
+        intake_payload={"symptoms": ["itchy rash"]},
+        generate_speech=True,
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == f"http://backend.test{MEDIA_ANALYZE_PATH}"
+    assert b"synthetic-image-bytes" in captured["body"]  # type: ignore[operator]
+    assert b'"symptoms": ["itchy rash"]' in captured["body"]  # type: ignore[operator]
+    assert b"true" in captured["body"]  # type: ignore[operator]
+    assert result["status"] == "ready_for_multimodal_processing"
+    assert result["media_analysis_note"] == "Reviewed the uploaded image."
+
+
+def test_analyze_media_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"detail": "Unsupported file format."})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_post(url: str, *, files: object, data: object, timeout: float) -> httpx.Response:
+        with httpx.Client(transport=transport) as client:
+            return client.post(url, files=files, data=data, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        analyze_media_via_api(
+            "http://backend.test",
+            b"synthetic-bytes",
+            filename="clip.txt",
+            content_type="text/plain",
+            intake_payload={},
+        )

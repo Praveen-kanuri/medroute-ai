@@ -1,4 +1,4 @@
-from app.providers.speech_to_text.base import SpeechToTextProvider
+from app.providers.speech_to_text.base import SpeechToTextProvider, TranscriptionResult
 
 
 class FakeSpeechToTextProvider(SpeechToTextProvider):
@@ -11,5 +11,11 @@ class FakeSpeechToTextProvider(SpeechToTextProvider):
         filename: str | None = None,
         content_type: str | None = None,
         language: str | None = None,
-    ) -> str:
-        return f"[fake-transcript] {len(audio_bytes)} bytes received"
+    ) -> TranscriptionResult:
+        return TranscriptionResult(
+            text=f"[fake-transcript] {len(audio_bytes)} bytes received",
+            provider="fake",
+            model="fake-stt-model",
+            language=language,
+            duration_seconds=None,
+        )

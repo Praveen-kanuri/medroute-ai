@@ -65,19 +65,30 @@ def _effective_duration(request: MultimodalIntakeRequest) -> Duration | None:
     return None
 
 
-def evaluate_intake(request: MultimodalIntakeRequest) -> MultimodalIntakeResponse:
+def evaluate_intake(
+    request: MultimodalIntakeRequest, *, vision_concern_present: bool = False
+) -> MultimodalIntakeResponse:
     """Evaluate a validated intake request into a typed response.
 
     Never mutates the input. Deterministic apart from the generated
     intake_id. Never returns a diagnosis, treatment advice, urgency score,
     media interpretation, or inferred specialty.
+
+    vision_concern_present (Phase 2C) is a caller-supplied signal — never
+    derived from this request itself — that a directly-uploaded image or
+    video already produced controlled visual observations for this turn
+    (see app.graph.nodes.normalize_intake_node and
+    app.services.vision_analysis_service). It only ever *satisfies* the
+    "concern" requirement below, exactly like a confirmed voice transcript
+    or (the still-unrelated, legacy) vision_inputs URL reference already
+    do — it never contributes to emergency detection or any other field.
     """
     text_received = _has_text(request)
     voice_received = _has_voice(request)
     image_count = _image_count(request)
     video_count = _video_count(request)
     vision_received = image_count > 0 or video_count > 0
-    concern_present = text_received or voice_received or vision_received
+    concern_present = text_received or voice_received or vision_received or vision_concern_present
     duration = _effective_duration(request)
 
     missing_fields: list[str] = []

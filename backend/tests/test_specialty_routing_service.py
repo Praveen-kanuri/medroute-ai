@@ -65,6 +65,22 @@ async def test_keyword_match_routes_to_dermatology_from_main_concern() -> None:
 
 
 @pytest.mark.asyncio
+async def test_keyword_match_routes_leg_swelling_to_internal_medicine() -> None:
+    # Phase 3A vertical slice: the leg-swelling protocol relies on this
+    # existing deterministic keyword match (no protocol-specific routing
+    # code) -- see app/catalog/nucc_specialties.py's internal-medicine
+    # keywords.
+    result = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=[],
+        main_concern="My left leg has been swollen for two days.",
+        settings=_settings(),
+    )
+    assert result.specialty_slug == "internal-medicine"
+    assert result.method == RoutingMethod.KEYWORD_MATCH
+
+
+@pytest.mark.asyncio
 async def test_no_keyword_overlap_is_unmatched() -> None:
     result = await route_to_specialty(
         preferred_specialty=None,
@@ -226,6 +242,66 @@ async def test_combined_symptoms_and_voice_transcript_are_scored_together() -> N
     )
     assert combined.specialty_slug == "cardiology"
     assert combined.method == RoutingMethod.KEYWORD_MATCH
+
+
+@pytest.mark.asyncio
+async def test_vision_observation_text_alone_routes_to_specialty() -> None:
+    # Phase 2C: flattened, already schema-validated visual-observation text
+    # (with no typed symptoms/main_concern/voice transcript at all) must
+    # still be able to drive deterministic keyword matching.
+    result = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=[],
+        main_concern=None,
+        vision_observation_text="visible itchy rash on the forearm",
+        settings=_settings(),
+    )
+    assert result.specialty_slug == "dermatology"
+    assert result.method == RoutingMethod.KEYWORD_MATCH
+
+
+@pytest.mark.asyncio
+async def test_omitted_vision_observation_text_behaves_like_before() -> None:
+    with_default = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["chest pain"],
+        main_concern=None,
+        settings=_settings(),
+    )
+    with_explicit_none = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=["chest pain"],
+        main_concern=None,
+        vision_observation_text=None,
+        settings=_settings(),
+    )
+    assert with_default == with_explicit_none
+
+
+@pytest.mark.asyncio
+async def test_combined_voice_transcript_and_vision_observation_scored_together() -> None:
+    # A voice transcript alone ("knee pain") matches orthopaedic-surgery
+    # (score 1). A vision observation contributing two cardiology keywords
+    # ("chest", "palpitations") must combine with, not replace, that signal
+    # and win on total keyword-overlap score (2 > 1).
+    voice_only = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=[],
+        main_concern=None,
+        voice_transcript="knee pain",
+        settings=_settings(),
+    )
+    assert voice_only.specialty_slug == "orthopaedic-surgery"
+
+    combined = await route_to_specialty(
+        preferred_specialty=None,
+        symptoms=[],
+        main_concern=None,
+        voice_transcript="knee pain",
+        vision_observation_text="chest palpitations",
+        settings=_settings(),
+    )
+    assert combined.specialty_slug == "cardiology"
 
 
 @pytest.mark.asyncio

@@ -4,34 +4,44 @@
 
 MedRoute AI is a backend-first system built around a FastAPI service and,
 as of Phase 2B, a compiled LangGraph conversation graph (`app/graph/`) for
-`POST /api/v1/converse`. It is designed so LLM-backed intelligence
-(routing suggestions, response phrasing) is strictly separated from
-deterministic data (doctor directory, appointment slots, bookings).
+`POST /api/v1/converse`; as of Phase 2C, that same graph also powers
+`POST /api/v1/media/analyze` via an additional `vision_analysis` node. It
+is designed so LLM-backed intelligence (routing suggestions, response
+phrasing, visual observations) is strictly separated from deterministic
+data (doctor directory, appointment slots, bookings).
 
 ## Layers
 
 - **api/** — HTTP surface. Thin FastAPI routers, no business logic.
 - **schemas/** — Pydantic v2 models shared across layers. The contract
-  between API, graph, and services.
+  between API, graph, and services. As of Phase 2C, `vision.py` defines
+  the controlled `VisionObservation` contract.
 - **graph/** — Empty through Phase 2A; as of Phase 2B, a compiled
   LangGraph conversation graph (`state.py`'s `ConversationState`,
   `nodes.py`'s node/conditional-edge functions, `build.py`'s
   `build_conversation_graph()`/`get_conversation_graph()`) orchestrating
   `POST /api/v1/converse`: intake normalization → safety gate →
   clarification (pause/resume) → specialty routing → provider search →
-  response composition → text-to-speech. Every node is a thin wrapper
-  around an existing, already-tested service — no business logic lives
-  here. Booking simulation remains future work (Phase 3).
+  response composition → text-to-speech. As of Phase 2C, the same graph
+  gains a `vision_analysis` node (conditionally run first, only when
+  validated media is present this turn — see below) that also powers
+  `POST /api/v1/media/analyze`. Every node is a thin wrapper around an
+  existing, already-tested service — no business logic lives here.
+  Booking simulation remains future work (Phase 3).
 - **providers/** — Abstract interfaces for external capabilities (text
-  LLM, speech-to-text, text-to-speech), each with a fake implementation
-  for tests and local development, isolating vendor-specific code. As of
-  Phase 2A, `speech_to_text/groq.py` provides a real `SpeechToTextProvider`
-  implementation (Groq hosted Whisper); as of Phase 2B,
-  `text_to_speech/deepgram.py` provides a real `TextToSpeechProvider`
-  implementation (Deepgram hosted Aura). A general-purpose `TextLLMProvider`
-  real implementation remains future work — Groq is called directly inside
-  `specialty_routing_service.py`/`response_composition_service.py` instead,
-  following the same "optional, validated, silent-fallback" pattern.
+  LLM, speech-to-text, text-to-speech, vision), each with a fake
+  implementation for tests and local development, isolating
+  vendor-specific code. As of Phase 2A, `speech_to_text/groq.py` provides
+  a real `SpeechToTextProvider` implementation (Groq hosted Whisper); as
+  of Phase 2B, `text_to_speech/deepgram.py` provides a real
+  `TextToSpeechProvider` implementation (Deepgram hosted Aura); as of
+  Phase 2C, `vision/groq.py` provides a real `VisionProvider`
+  implementation (a Groq-hosted multimodal chat model). A general-purpose
+  `TextLLMProvider` real implementation remains future work — Groq is
+  called directly inside
+  `specialty_routing_service.py`/`response_composition_service.py`
+  instead, following the same "optional, validated, silent-fallback"
+  pattern.
 - **db/** — Async SQLAlchemy 2 foundation: declarative `Base`, a lazily
   created engine/session factory, a FastAPI session dependency, a
   `SELECT 1` readiness check (Phase 0.2), and the NPPES provider/location/
@@ -70,13 +80,24 @@ deterministic data (doctor directory, appointment slots, bookings).
   (Phase 2B: deterministic non-diagnostic response templating, with an
   optional validated Groq rephrasing), `text_to_speech_service.py`
   (Phase 2B: best-effort synthesis over the abstract `TextToSpeechProvider`
-  — never blocks the text response), and `conversation_service.py`
-  (Phase 2B: the thin orchestration wrapper around the compiled graph). No
-  LLM/STT/TTS call happens anywhere in this layer unless the relevant
-  mode setting or provider is explicitly configured with a real key.
-- **safety/** — Disclaimer text and user-declared emergency messaging
-  (`app/safety/constants.py`). Autonomous/inferred emergency detection
-  from free text or media remains a dedicated future milestone.
+  — never blocks the text response), `conversation_service.py`
+  (Phase 2B/2C: the thin orchestration wrapper around the compiled graph —
+  as of Phase 2C, also accepts an optional validated media upload),
+  `media_validation_service.py` (Phase 2C: signature-based format
+  detection, size/dimension/duration limits, image normalization via
+  Pillow, and deterministic video frame sampling via OpenCV — no
+  vision-model call happens here), and `vision_analysis_service.py`
+  (Phase 2C: orchestrates the abstract `VisionProvider`, schema-validates
+  every candidate observation, deduplicates repeated ones, and never
+  fabricates a result on missing configuration or failure). No
+  LLM/STT/TTS/vision call happens anywhere in this layer unless the
+  relevant mode setting or provider is explicitly configured with a real
+  key.
+- **safety/** — Disclaimer text, user-declared emergency messaging, and
+  the shared forbidden-medical-claim-term lists (`app/safety/constants.py`)
+  applied to both optional Groq response rephrasing and Phase 2C vision
+  observations. Autonomous/inferred emergency detection from free text or
+  media remains a dedicated future milestone.
 - **tools/** — LangGraph tool functions (e.g., doctor search). Empty in
   Phase 0.
 - **config/** — Environment-driven settings via pydantic-settings.
@@ -196,16 +217,15 @@ Streamlit does not replace or precede it.
 ### Beyond Phase 1D (documented, not implemented)
 
 Real text/vision-model understanding (rather than deterministic keyword
-matching), vision-model processing producing a non-diagnostic visual
-description, model-output validation beyond catalog-slug checking, and
-model-evaluation fixtures remain future work. Any of it must still never
-diagnose, offer a differential diagnosis, give treatment instructions,
-claim medical certainty, infer an emergency autonomously, trust
-unvalidated model output directly, or claim that visual interpretation
-replaces a clinical examination. Real speech-to-text was delivered in
-Phase 2A and text-to-speech in Phase 2B (both below); vision input
-(Phase 2C) and the production React frontend (Phase 5) remain separate,
-later milestones.
+matching) and model-evaluation fixtures remain future work. Any of it
+must still never diagnose, offer a differential diagnosis, give treatment
+instructions, claim medical certainty, infer an emergency autonomously,
+trust unvalidated model output directly, or claim that visual
+interpretation replaces a clinical examination. Real speech-to-text was
+delivered in Phase 2A, text-to-speech in Phase 2B, and vision-model
+processing producing controlled, schema-validated, non-diagnostic visual
+observations in Phase 2C (all below); the production React frontend
+(Phase 5) remains a separate, later milestone.
 
 ## Phase 2A: real voice intake with Groq Whisper
 
@@ -344,30 +364,144 @@ Phase 1D–2A — text intake, audio upload, transcript review/confirmation,
 emergency declaration, specialty selection, provider results — is
 unchanged.
 
-**Vision preparation, not implementation:** `ConversationState` reserves a
-typed `vision_observations: list[VisionObservation]` field (a label plus
-an optional confidence score) for Phase 2C. It is always empty in
-Phase 2B — no image/video processing exists yet, and nothing fabricates a
-value for it.
-
 **Out of scope in Phase 2B:** autonomous emergency detection from
 text/transcript (emergency remains strictly user-declared, per
 `safety_gate` above), diagnosis, treatment advice, urgency scoring,
-image/video interpretation, and any exposure of chain-of-thought, raw
-prompts, or internal graph state — the API only ever returns the typed
-`ConversationResponse` contract.
+image/video interpretation (delivered in Phase 2C below), and any
+exposure of chain-of-thought, raw prompts, or internal graph state — the
+API only ever returns the typed `ConversationResponse` contract.
 
-## Phase 2C (planned): vision input
+## Phase 2C: controlled image and video understanding
 
-Image upload → a dedicated vision node → a list of controlled,
-non-diagnostic `VisionObservation`s (already reserved in `ConversationState`,
-see above) → the same graph, unchanged, from `specialty_routing` onward.
-Video is not a separate pipeline: controlled frame sampling feeds the same
-vision node a single image (or a small bounded set of them) would. Vision
-output must be structurally validated the same way Groq's routing/response
-output already is — never trusted as free-form or fabricated text.
+`POST /api/v1/media/analyze` (`app/api/v1/media.py`) accepts one directly
+uploaded image (JPEG/PNG/WebP) or short video (MP4/MOV/WebM) — never a
+remote URL or filesystem path — validates it, and runs it through the
+same compiled graph as `POST /api/v1/converse`, with one new node prepended:
 
-## Phase 0 / 0.2 / 1A / 1B / 1C / 1D / 2A / 2B scope
+```
+vision_analysis -> normalize_intake -> safety_gate -> [clarification | response_composition]
+clarification -> [normalize_intake (resumed) | specialty_routing]
+specialty_routing -> [provider_search | response_composition]
+provider_search -> response_composition -> text_to_speech -> END
+```
+
+`vision_analysis` only runs when the caller's initial state marks
+validated media as present this turn (`ConversationState.media_pending`,
+set directly by `conversation_service.run_conversation_turn()` — never
+derived by a node); otherwise the graph starts at `normalize_intake`
+exactly as in Phase 2B. It never re-runs on a resumed clarification turn,
+since a resume invocation never passes a fresh initial state.
+
+**Upload validation** (`app/services/media_validation_service.py`) happens
+entirely before any vision-model call:
+
+- Format is determined by sniffing the file signature (JPEG/PNG/WebP magic
+  bytes; the ISO-BMFF `ftyp` box for MP4/MOV; the EBML header for WebM) —
+  never by trusting the filename extension or client-declared
+  Content-Type, so a mislabeled or spoofed upload is still correctly
+  classified or rejected.
+- Empty, oversized (`IMAGE_MAX_UPLOAD_BYTES`/`VIDEO_MAX_UPLOAD_BYTES`),
+  malformed, or unsupported uploads are rejected with typed errors mapped
+  to 422/413 responses.
+- **Images:** Pillow validates structure (`Image.verify()`), enforces
+  `IMAGE_MAX_DIMENSION_PX` (per-side) and `IMAGE_MAX_PIXELS` (total pixel
+  count — a decompression-bomb guard independent of the per-side check),
+  corrects EXIF orientation, converts to RGB, and re-encodes as JPEG with
+  no `exif=` payload — stripping metadata as a side effect of the
+  re-encode, not a separate pass.
+- **Video:** written to a securely-scoped temporary file (always removed
+  in a `finally` block, on every path including failure) and decoded via
+  OpenCV. Duration (`VIDEO_MAX_DURATION_SECONDS`), dimensions
+  (`VIDEO_MAX_DIMENSION_PX`), and decode success are validated, then a
+  bounded, deterministic number of frames (`VIDEO_MAX_SAMPLED_FRAMES`,
+  evenly spread from the first to the last frame) is extracted and
+  JPEG-encoded — the raw video is never sent to a model, and frame
+  timestamps are preserved for the response.
+
+**Vision analysis** (`app/services/vision_analysis_service.py` +
+`app/providers/vision/`) mirrors the project's established
+optional-provider pattern exactly: a `vision_mode` setting (default
+`"deterministic"`) means a real `GROQ_API_KEY` alone is never enough to
+trigger a live call — `VISION_MODE=groq` must be explicitly set too
+(unlike routing/response text, there is no non-model "vision" fallback,
+so this flag is the only switch, and it is what keeps a real key present
+for local development from ever causing an automated test to make a live
+call). When enabled, `app/providers/vision/groq.py` sends each sampled
+frame to Groq's current, generally-available vision (image-input) model,
+`qwen/qwen3.6-27b` by default — confirmed live against Groq's own
+`/docs/vision` documentation and an actual API call; `meta-llama/llama-4-
+scout-17b-16e-instruct`, sometimes documented elsewhere as a Groq vision
+model, returned 404 `model_not_found` for this project's API access at
+the time of writing, and no Groq vision model currently supports strict
+`json_schema` structured outputs, so the request uses `json_object` mode
+plus an explicit shape description in the system prompt instead — the
+same pattern already used for this project's optional Groq routing/
+response-rephrasing calls. The requested shape is: `observation_type`,
+`body_area`, `visual_description`, `visible_attributes`, a coarse
+`confidence` category, and `limitations` — no diagnosis, disease name,
+treatment suggestion, urgency score, or emergency classification is ever
+part of the requested shape. Every candidate observation is independently
+re-validated against
+`app.schemas.vision.VisionObservation` (`source_type`/
+`frame_timestamp_seconds` added by the caller, never the model) before
+being trusted; a schema violation (including a forbidden medical-claim
+word — the same scrub-then-check pattern Phase 2B's response rephrasing
+uses for its required "not a diagnosis" phrase) drops just that one
+observation rather than fabricating a replacement or crashing the turn.
+Substantially repeated observations across frames are deduplicated by
+normalized description text; the total kept is capped by
+`VISION_MAX_OBSERVATIONS`. Any missing configuration, timeout, malformed
+output, or provider failure yields an empty observation list plus a safe
+status note (e.g. "the uploaded media could not be analyzed") — never a
+fabricated finding, and never blocks the rest of the turn.
+
+**Downstream integration**, all additive and backward-compatible:
+
+- `normalize_intake_node` treats a non-empty `vision_observations` list as
+  satisfying intake's "concern" requirement — an image/video upload alone
+  (no typed text or voice) can now complete intake on its own, exactly
+  like a confirmed voice transcript already can.
+- `specialty_routing_node` flattens validated `visual_description`/
+  `visible_attributes` text into the same deterministic keyword-matching
+  token set as `symptoms`/`main_concern`/confirmed voice transcript (see
+  Phase 2A) — combined, not replacing, so a request with several
+  modalities scores them together.
+- `response_composition_node` folds in a concise note that media was
+  processed, a short factual summary of what was observed, and (already
+  present in every non-diagnostic response) the "not a diagnosis"
+  disclaimer.
+- Emergency detection is completely untouched: `safety_gate` still reads
+  only the already-evaluated `intake_response.status`, itself derived
+  solely from user-declared `emergency_concern`/`emergency_signals` — a
+  visual observation, however visually striking its (still schema-safe)
+  text might be, never influences it.
+
+**`ConversationResponse`** gains two additive fields:
+`vision_observations: list[VisionObservation]` and
+`media_analysis_note: str | None`, both empty/`None` for a text/voice-only
+turn.
+
+**Streamlit** (`backend/streamlit_app/`) adds an "Image/video intake"
+section: a file uploader, a local preview (`st.image`/`st.video`), and an
+explicit "Analyze media" action that runs the same full conversation turn
+as "Submit" (via the new `POST /api/v1/media/analyze`, carrying whatever
+other form fields — symptoms, main concern, confirmed voice transcript,
+location, preferred specialty, emergency declaration — are already filled
+in). A newly selected file always invalidates any prior media-analysis
+result. Returned visual observations are rendered alongside the existing
+routing/provider-search/response/audio sections. Every Phase 1D–2B
+functional element is unchanged.
+
+**Out of scope in Phase 2C:** diagnosis, differential diagnosis, disease/
+condition naming, treatment instructions, medication recommendations,
+urgency scoring, medical-certainty claims, and autonomous emergency
+conclusions from visual content — all rejected at the
+`VisionObservation` schema level before they could ever reach a response.
+Uploaded media, extracted frames, and temporary files are never
+persisted; only safe operational metadata (media kind, frame count,
+status, timing) is ever logged.
+
+## Phase 0 / 0.2 / 1A / 1B / 1C / 1D / 2A / 2B / 2C scope
 
 The package skeleton, abstract provider interfaces with fake
 implementations, domain schemas, configuration, and engineering tooling
@@ -382,7 +516,10 @@ end-to-end navigation demo endpoint, and a Streamlit demo UI (Phase 1D),
 plus a real Groq Whisper speech-to-text endpoint and a confirmation-gated
 Streamlit voice workflow (Phase 2A), plus a compiled LangGraph
 conversation graph with pause/resume clarification, response composition,
-and real Deepgram text-to-speech behind `POST /api/v1/converse` (Phase 2B).
-No vision/image processing, no full national NPPES import, no Qdrant/
-vector search, and no autonomous/inferred emergency detection yet — those
-remain later-phase work.
+and real Deepgram text-to-speech behind `POST /api/v1/converse` (Phase 2B),
+plus controlled, schema-validated image/video understanding — signature-
+based upload validation, deterministic video frame sampling, and a Groq
+vision provider feeding the same graph — behind
+`POST /api/v1/media/analyze` (Phase 2C). No full national NPPES import,
+no Qdrant/vector search, and no autonomous/inferred emergency detection
+yet — those remain later-phase work.

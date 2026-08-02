@@ -4,6 +4,7 @@ from app.api.v1 import (
     conversation,
     health,
     intake,
+    media,
     navigation,
     providers,
     readiness,
@@ -22,3 +23,4 @@ api_router.include_router(intake.router, prefix="/api/v1")
 api_router.include_router(navigation.router, prefix="/api/v1")
 api_router.include_router(voice.router, prefix="/api/v1")
 api_router.include_router(conversation.router, prefix="/api/v1")
+api_router.include_router(media.router, prefix="/api/v1")

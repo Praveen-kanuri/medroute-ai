@@ -175,19 +175,64 @@
   urgency scoring, image/video interpretation, chain-of-thought or raw
   graph-state exposure.
 
-## Phase 2C — Vision Input (planned)
+## Phase 2C — Controlled Image & Video Understanding (complete)
 
-- Image upload -> a dedicated vision node -> a list of controlled,
-  non-diagnostic visual observations (e.g. "visible rash on forearm") ->
-  the same LangGraph workflow from `specialty_routing` onward, unchanged.
-- Video is not a separate pipeline: controlled frame sampling feeds the
-  same vision node as a single image upload does.
-- Observations must be structurally constrained (a label plus an optional
-  confidence score) and never accepted as fabricated/unvalidated free
-  text — mirroring the same "controlled tool, validated output" pattern
-  already used for specialty routing and response composition.
-- Still never a diagnosis, treatment suggestion, or urgency judgment from
-  visual content.
+- `POST /api/v1/media/analyze` — accepts one directly-uploaded image
+  (JPEG/PNG/WebP) or short video (MP4/MOV/WebM), never a remote URL or
+  filesystem path. Format is determined by sniffing the file signature
+  (`app/services/media_validation_service.py`), never by trusting the
+  filename extension or client-declared Content-Type. Empty, oversized,
+  malformed, or excessive-dimension/duration uploads are rejected with
+  typed errors (422/413) before any vision-model call is ever made.
+- A new `vision_analysis` node runs first in the LangGraph graph (only
+  when validated media was uploaded this turn — otherwise the graph is
+  unchanged from Phase 2B), converting sampled still frames into a list
+  of controlled `VisionObservation` objects (`app/schemas/vision.py`):
+  `observation_type`, optional `body_area`, `visual_description`,
+  `visible_attributes`, a coarse `confidence` category (never a numeric
+  score), `source_type`, and `frame_timestamp_seconds` (video only) —
+  never a diagnosis, disease name, treatment suggestion, urgency score,
+  or emergency classification. Schema validation rejects any model output
+  that violates this (including the required "not a diagnosis" disclaimer
+  phrase, which is scrubbed before the check, exactly like Phase 2B's
+  response rephrasing does).
+- Vision analysis is optional and best-effort, mirroring every other
+  external-provider integration in this project (Groq STT/routing/
+  response, Deepgram TTS): a new `vision_mode` setting (default
+  `"deterministic"`) means a real Groq API key alone is never enough to
+  trigger a live call — `vision_mode=groq` is required too. Any missing
+  configuration, timeout, malformed output, or provider failure yields an
+  empty observation list plus a safe status note; it never fabricates an
+  observation or blocks the rest of the turn.
+- Image workflow: Pillow validates structure, corrects EXIF orientation,
+  strips metadata (re-encoded with no `exif=` payload), and enforces
+  configurable per-side and total-pixel-count limits (a decompression-
+  bomb guard) before any model call.
+- Video workflow: OpenCV decodes into a temporary file (always removed,
+  including on every failure path), validates duration/dimensions/decode
+  success, and deterministically samples a bounded, configurable number
+  of frames evenly across the video — the raw video is never sent to a
+  model. Frame timestamps are preserved; substantially repeated
+  observations across frames are deduplicated by description text.
+- Validated visual-observation text is folded into the same deterministic
+  specialty-routing keyword match as symptoms/main_concern/confirmed voice
+  transcript (Phase 1D/2A/2B) — never into emergency detection, which
+  remains strictly user-declared. An image/video upload alone (no typed
+  text or voice) can now also satisfy intake's "concern" requirement.
+- The final response text names that media was processed, a short
+  concrete summary of what was visually observed, and that this is a
+  visual review only, not a diagnosis — composed the same
+  deterministic-by-default/optional-Groq-rephrasing way as Phase 2B.
+- Streamlit: an "Image/video intake" section with upload, local preview
+  (`st.image`/`st.video`), and an explicit "Analyze media" action that
+  runs the same full conversation turn as "Submit" (via
+  `POST /api/v1/media/analyze`); a newly selected file always invalidates
+  any prior media-analysis result. Displays the returned controlled
+  visual observations. All Phase 1D/2A/2B functional elements are
+  unchanged.
+- Uploaded media, extracted frames, and temporary files are never
+  persisted or logged — only safe operational metadata (media kind, frame
+  count, status, timing) is ever logged.
 
 ## Phase 2 (superseded) — LLM-Backed Routing
 
@@ -201,6 +246,73 @@
   *user's own* confirmation, never as an autonomous override — stays
   unscheduled pending a dedicated safety-design review; emergency status
   remains strictly user-declared until then.
+
+## Phase 3A — Clinical-Context Intake & Deterministic Red-Flag Safety Gate (complete)
+
+- A protocol-agnostic clinical-context schema
+  (`app/schemas/clinical_context.py`): `ClinicalFact` (value + confidence
+  `explicit`/`derived`/`unknown` + source `text`/`voice`/`vision`/
+  `clarification_answer`), `ClinicalContext` (primary concern, onset,
+  duration, location, laterality, progression, severity, associated
+  features, risk factors, explicit negative findings, and which protocol
+  questions remain unanswered), and `ClinicalNavigationSummary`
+  (`diagnosis`/`treatment_recommendation` typed as always-`None`). Nothing
+  is ever invented — a field the user never addressed stays unset.
+- A single, protocol-agnostic graph step, `clinical_intake_agent`
+  (`app/graph/nodes.py`), added between the existing `clarification` and
+  `specialty_routing_agent` nodes: a complete no-op (falls straight
+  through, exactly as before) for any concern matching no known protocol —
+  see `app/services/clinical_intake_service.py`'s `ClinicalProtocol`
+  registry, currently one entry: unilateral/one-sided leg swelling. For a
+  matched protocol, it asks its own ordered questions one at a time
+  (self-looping via the same LangGraph `interrupt()`/`Command(resume=...)`
+  mechanism `clarification` already uses), skipping any question the
+  original message already answered. Typed and voice-originated answers
+  both work unchanged: the graph reports the same fixed
+  `missing_fields=["clinical_answer"]` shape `clarification` already
+  produces, and accepts either a typed `clarification_answer.
+  clinical_answer_text` or a spoken `clarification_answer.voice_transcript`
+  (`app/schemas/conversation.py`).
+- A dedicated, deterministic red-flag safety gate,
+  `clinical_red_flag_gate` (`app/graph/nodes.py` +
+  `app/safety/red_flag_rules.py`), runs immediately after the leg-swelling
+  protocol's red-flag question is answered — always before specialty/
+  provider routing. Uses a centralized, versionable phrase catalog and a
+  reusable negation-aware phrase classifier
+  (`app/services/mention_classification_service.py`) to distinguish
+  affirmed ("I have chest pain") from negated ("no chest pain" / "I don't
+  have trouble breathing") from unknown ("I'm not sure" — never treated as
+  affirmed). No model call anywhere in this path. An affirmed flag reuses
+  the existing `is_emergency`/`EMERGENCY_SAFETY_MESSAGE` path unchanged —
+  it never identifies a disease and never bypasses the existing
+  user-declared emergency precedence (checked first, unconditionally).
+- Once a protocol's questions are all answered with no red flag affirmed,
+  a bounded `ClinicalNavigationSummary` is produced from a small,
+  reviewable per-protocol definition (never RAG, never scraped content):
+  a plain-language recap of what was reported, a handful of broad
+  non-diagnostic possible-explanation categories with supporting evidence
+  drawn only from the user's own answers, a routine/prompt care-level
+  recommendation, and specialty candidates drawn only from the existing
+  Phase 1B/1D catalog (`app/catalog/nucc_specialties.py`, extended with a
+  few leg-swelling-relevant keywords on Internal Medicine — no new
+  specialty, no bypassed routing contract). Folded into
+  `POST /api/v1/converse`'s existing response text
+  (`app/services/response_composition_service.py`) and exposed as a new,
+  optional `ConversationResponse.clinical_navigation` field.
+- Streamlit: the existing typed follow-up form renders a plain free-text
+  answer box for a pending protocol question (`missing_fields=
+  ["clinical_answer"]`) instead of the duration/main-concern controls
+  meant for Phase 1C's generic fields, and the chat feed renders the
+  clinical-navigation summary (possible categories, unknowns, recommended
+  care level) once produced. No changes were needed for voice-answered
+  protocol questions — the existing voice-clarification-resume path
+  already carries a spoken answer through unchanged.
+- Out of scope (unchanged from earlier phases): diagnosis, treatment
+  recommendations, autonomous emergency detection from ordinary text
+  (still strictly user-declared, checked first), hybrid RAG, and a medical
+  knowledge graph — the possible-explanation content is a small, reviewable,
+  hand-written protocol definition only, explicitly meant to be later
+  replaced or grounded by hybrid RAG rather than being it.
 
 ## Phase 3 — Booking Simulation (planned)
 

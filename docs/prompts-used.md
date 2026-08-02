@@ -398,3 +398,142 @@ running application.
 > `GROQ_STT_MODEL`'s documented default changed from `whisper-large-v3-turbo`
 > to `whisper-large-v3` for transcription accuracy over latency/cost in a
 > medical-navigation intake context.
+
+### Phase 2C — controlled image and video understanding
+
+> Continue working directly in the current MedRoute-AI repository on
+> branch R1. First confirm: R1 is synchronized with origin/R1; Phase 2A
+> and Phase 2B are committed; the full existing test suite passes; the
+> LangGraph conversation workflow and Deepgram TTS remain functional.
+> Implement Phase 2C: controlled image and video understanding through
+> the existing LangGraph conversational workflow. Product objective:
+> image or video upload → secure media validation → controlled vision
+> analysis → validated VisionObservation objects → existing intake and
+> safety flow → specialty routing → provider search → safe conversational
+> response → optional Deepgram spoken output. Requirements spanned: (1) a
+> media-upload API accepting direct file uploads only (JPEG/PNG/WebP
+> images; MP4/MOV/WebM video where decoding is available), configurable
+> conservative size limits, signature/content validation (not filename
+> extension or client MIME type), typed rejection of empty/unsupported/
+> malformed/oversized files, no filesystem paths from the client, no
+> execution of embedded media/metadata, metadata stripping, bounded
+> in-memory or securely-managed temporary-file processing removed
+> immediately after use, no database migration; (2) a controlled vision
+> schema (observation_type, body_area, visual_description,
+> visible_attributes, confidence category, source_type,
+> frame_timestamp_seconds for video, limitations) that must not contain
+> diagnosis, disease prediction, treatment, urgency score, or emergency
+> classification, rejecting/sanitizing violating model output, never
+> exposing chain-of-thought; (3) a vision provider abstraction — inspect
+> the installed SDK and project configuration before choosing an
+> implementation, no obsolete model identifier, configurable provider/
+> model/timeout/limits, locally schema-validated structured output,
+> explicit handling for missing configuration/timeout/malformed output/
+> safety/provider failure, never fabricating observations on failure,
+> fake providers only in tests; (4) a dedicated vision_analysis LangGraph
+> node, run only when validated image/video input is present, feeding
+> controlled observation text into specialty routing alongside symptoms/
+> main_concern/confirmed voice transcript, never into emergency detection,
+> preserving declared-emergency precedence and clarification interrupt/
+> resume/thread state, continuing through the existing graph from
+> specialty_routing onward, never duplicating existing logic; (5) a real
+> image workflow (validate/normalize, safe dimension/pixel limits,
+> orientation correction, metadata removal, catalog-constrained routing
+> contribution, an explicit "not a diagnosis" statement in the final
+> response); (6) a video workflow via controlled, deterministic frame
+> sampling through the same vision provider/schema — no raw video sent to
+> an LLM, validated duration/size/decode/dimensions, a configurable
+> maximum duration and sampled-frame count, preserved timestamps,
+> deduplication of substantially repeated observations, guaranteed
+> cleanup of every temporary artifact including on failure; (7) extended
+> response composition naming that media was processed, a concise
+> description of controlled observations, the selected specialty (if
+> any), provider-result availability, the non-diagnostic disclaimer, and
+> interpretation limitations, never diagnosis/treatment/medication/
+> urgency/certainty/autonomous-emergency claims; (8) Streamlit functional-
+> only additions (upload, local preview, an explicit "Analyze media"
+> action, failure-state display, controlled-observation display), while
+> preserving every existing element and requiring no voice re-
+> transcription; (9) a large required test list covering upload
+> validation (valid/empty/malformed/unsupported/oversized/spoofed/
+> decompression-bomb), schema validation and rejection of diagnostic
+> output, vision-node conditional routing, contribution to and exclusion
+> from routing/emergency detection, provider-failure handling, TTS
+> preservation on failure, video sampling/limits/timestamps/cleanup, no
+> external calls, privacy-safe logging, and full backward compatibility;
+> (10) documentation updates across `.env.example`, `README.md`,
+> `CLAUDE.md`, `PROJECT_WIKI.md`, `docs/architecture.md`,
+> `docs/roadmap.md`, and `docs/prompts-used.md`; (11) the full existing
+> validation suite plus one manual image and (if implemented successfully)
+> one short video smoke test, using only safe, non-identifying synthetic
+> assets. Do not commit or push; do not modify or stage `Notes/` or
+> `audio.mp3`.
+
+> Before choosing an implementation, the installed Groq SDK
+> (`groq>=1.6.0`, already a project dependency for STT/routing/response
+> rephrasing) was inspected live via `inspect.signature()` and confirmed
+> to support multimodal chat messages (`image_url` content parts with a
+> base64 data URL) and JSON-schema-constrained structured output
+> (`response_format={"type": "json_schema", ...}`) against its own
+> currently-supported, non-deprecated model list — `meta-llama/llama-4-
+> scout-17b-16e-instruct` was chosen over the larger
+> `llama-4-maverick-17b-128e-instruct` as the more conservative default
+> for a demo. This meant no new LLM SDK dependency was needed; `pillow`
+> was already present (transitively) and `opencv-python-headless` was
+> added as the one new dependency, for deterministic video frame decoding
+> and sampling (verified with a real in-process encode/decode round trip
+> before writing any code against it, on this Windows dev machine).
+>
+> A real, self-caught safety/testability gap: unlike `routing_mode`/
+> `response_mode` (both default to `"deterministic"`, gating any real Groq
+> call behind an explicit opt-in), the first implementation of vision
+> analysis had no equivalent switch — it attempted a real provider
+> whenever a Groq API key was configured at all. Since this repository's
+> own local, gitignored `.env` (used for manual development, never
+> committed) has a real `GROQ_API_KEY` set, an early test run actually
+> made a live outbound call before this was caught. Fixed by adding a new
+> `vision_mode` setting (default `"deterministic"`) mirroring the existing
+> pattern exactly, so a real key alone is never sufficient — this is what
+> keeps every automated test, and any environment with a real key
+> configured for other features, from ever triggering a live vision call
+> by default.
+>
+> `evaluate_intake()` (Phase 1C, otherwise unchanged) gained one additive,
+> caller-supplied `vision_concern_present` parameter — set only by the
+> graph's `normalize_intake_node` when `vision_analysis` already produced
+> at least one observation this turn — so that an image/video upload with
+> no typed text or voice transcript can satisfy intake's "concern"
+> requirement on its own, exactly like a confirmed voice transcript
+> already does; `POST /api/v1/navigate`'s call site is unaffected since it
+> never passes this argument. `route_to_specialty()` gained an analogous
+> `vision_observation_text` parameter, folded into the same deterministic
+> keyword-token set as symptoms/main_concern/voice transcript — never
+> read by the optional Groq-backed routing path, and never used for
+> emergency detection, which remains driven solely by
+> `emergency_concern`/`emergency_signals` regardless of what a directly
+> uploaded image or video shows.
+>
+> `POST /api/v1/media/analyze` is a new, dedicated multipart endpoint
+> (mirroring `POST /api/v1/voice/transcribe`'s upload-validation pattern)
+> rather than a JSON field bolted onto `POST /api/v1/converse` — raw media
+> bytes never enter checkpointed `ConversationState` at all; they are
+> validated and normalized into a small `PreparedMedia`/`MediaFrame`
+> value at the API layer, then passed transiently through
+> `config["configurable"]["media"]` (never persisted by LangGraph's
+> checkpointer) to a new `vision_analysis` node reachable via a
+> conditional edge from `START` (`route_from_start`), which only the
+> initial turn's `media_pending` flag can trigger — a resumed
+> clarification turn never re-runs it. Only the resulting, already
+> schema-validated `VisionObservation` dicts are ever written into graph
+> state.
+>
+> 84 new tests added across `test_vision_schema.py` (13),
+> `test_media_validation_service.py` (24), `test_vision_analysis_service.py`
+> (14), `test_media_api.py` (17), `test_conversation_graph.py` (+8),
+> `test_specialty_routing_service.py` (+4), `test_response_composition_service.py`
+> (+3), and `test_streamlit_api_client.py` (+2), for 508 total (424 + 84).
+> No Alembic migration (head unchanged). One pre-existing gap noted rather
+> than silently fixed: `README.md`/`PROJECT_WIKI.md`/`docs/prompts-used.md`
+> were never updated for Phase 2B, so this pass updates them for both
+> Phase 2B and Phase 2C context where needed, but does not attempt to
+> reconstruct a verbatim Phase 2B prompt entry here.

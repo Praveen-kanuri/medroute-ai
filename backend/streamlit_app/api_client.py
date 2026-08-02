@@ -9,6 +9,8 @@ Payload construction is a pure function, kept separate from the network
 call, so it is fully unit-testable without any HTTP activity.
 """
 
+import hashlib
+import json
 from typing import Any
 
 import httpx
@@ -18,6 +20,7 @@ NAVIGATE_PATH = "/api/v1/navigate"
 SPECIALTIES_PATH = "/api/v1/specialties"
 TRANSCRIBE_PATH = "/api/v1/voice/transcribe"
 CONVERSE_PATH = "/api/v1/converse"
+MEDIA_ANALYZE_PATH = "/api/v1/media/analyze"
 
 
 def build_navigation_payload(
@@ -40,8 +43,8 @@ def build_navigation_payload(
     optional-field contract rather than sending nulls/empties for everything
     the form happens to have a widget for.
 
-    voice_transcript is only ever forwarded by the caller after the user has
-    explicitly confirmed it (see resolve_confirmed_voice_transcript) — this
+    voice_transcript is forwarded as-is by the caller (the automatic voice
+    workflow submits it directly, with no confirmation step) — this
     function itself has no confirmation logic, it just shapes the payload.
     """
     payload: dict[str, Any] = {"emergency_concern": emergency_concern}
@@ -75,23 +78,64 @@ def build_navigation_payload(
     return payload
 
 
-def resolve_confirmed_voice_transcript(*, transcript: str | None, confirmed: bool) -> str | None:
-    """Only ever returns a transcript when the caller has explicitly confirmed it.
+def voice_recording_changed(
+    *, previous_recording_id: str | None, current_recording_id: str | None
+) -> bool:
+    """Whether the microphone recording changed since the last run (a new
+    recording captured, "Record again" pressed, or the recorder cleared).
 
-    Kept as a plain function (not inline in app.py) so the "never auto-submit
-    an unconfirmed transcript" rule is directly unit-testable without needing
-    a Streamlit AppTest run.
+    Kept as a plain function (not inline in app.py) so the "a new/cleared
+    recording must reset the prior transcript, confirmation, and any
+    dependent conversation result" rule is directly unit-testable without
+    needing a Streamlit AppTest run — st.audio_input can't be simulated
+    end-to-end in a headless test.
     """
-    if not confirmed:
-        return None
-    stripped = (transcript or "").strip()
-    return stripped or None
+    return previous_recording_id != current_recording_id
+
+
+def fingerprint_bytes(data: bytes) -> str:
+    """A stable SHA-256 fingerprint for a chunk of bytes (a microphone
+    recording) — used to detect whether a *new* recording has been
+    captured, never to identify or log its content. Kept as a plain
+    function so the "same recording never gets processed twice" guard is
+    directly unit-testable.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def build_voice_turn_fingerprint(
+    *,
+    transcript: str | None,
+    thread_id: str | None = None,
+    clarification_answer: dict[str, Any] | None = None,
+) -> str:
+    """A stable fingerprint identifying one specific voice-originated
+    conversation request — the initial turn, a corrected-transcript turn,
+    or a clarification-resume turn.
+
+    Two calls with the same transcript/thread_id/clarification_answer
+    always produce the same fingerprint; changing any of them (a new or
+    corrected transcript, a different clarification answer, resuming a
+    different thread) always produces a different one. Used to guard
+    against Streamlit reruns re-submitting the same request to
+    /api/v1/converse, LangGraph clarification-resume, or provider search.
+    """
+    payload = {
+        "transcript": (transcript or "").strip(),
+        "thread_id": thread_id,
+        "clarification_answer": clarification_answer or {},
+        "voice_mode": True,
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 # Fields the backend's typed missing_fields list (see
-# MultimodalIntakeResponse.missing_fields) can contain, and that the
-# clarification follow-up UI knows how to render a control for.
-FOLLOWUP_SUPPORTED_FIELDS = ("concern", "duration")
+# MultimodalIntakeResponse.missing_fields, plus the fixed "clinical_answer"
+# entry app.graph.nodes.clinical_intake_agent_node reports for any pending
+# Phase 3A protocol question) can contain, and that the clarification
+# follow-up UI knows how to render a control for.
+FOLLOWUP_SUPPORTED_FIELDS = ("concern", "duration", "clinical_answer")
 
 
 def followup_fields_from_missing(missing_fields: list[str]) -> set[str]:
@@ -193,19 +237,37 @@ def build_clarification_resume_payload(
     duration_value: int | None = None,
     duration_unit: str | None = None,
     main_concern: str | None = None,
+    voice_transcript: str | None = None,
+    clinical_answer_text: str | None = None,
     generate_speech: bool = False,
 ) -> dict[str, Any]:
     """Build a JSON-serializable request body for POST /api/v1/converse
-    that *resumes* a paused clarification turn with a typed answer — the
-    original confirmed transcript and every other intake field are
-    preserved server-side (see app/services/conversation_service.py),
-    so nothing from the earlier turn needs to be resent here.
+    that *resumes* a paused clarification turn with a typed or spoken
+    answer — the original confirmed transcript and every other intake
+    field are preserved server-side (see
+    app/services/conversation_service.py), so nothing from the earlier
+    turn needs to be resent here.
+
+    voice_transcript carries a *new* spoken answer to the clarification
+    question itself (e.g. the user re-recorded to answer "how long" by
+    voice instead of typing it) — the server derives duration/main_concern
+    from it; it is never used to overwrite the turn's original confirmed
+    transcript.
+
+    clinical_answer_text (Phase 3A) carries a *typed* free-text answer to a
+    pending app.services.clinical_intake_service protocol question (missing
+    field "clinical_answer") — a spoken answer to that same question is
+    still carried via voice_transcript above; the backend accepts either.
     """
     answer: dict[str, Any] = {}
     if duration_value is not None and duration_value > 0 and duration_unit:
         answer["duration"] = {"value": duration_value, "unit": duration_unit}
     if main_concern:
         answer["main_concern"] = main_concern
+    if voice_transcript:
+        answer["voice_transcript"] = voice_transcript
+    if clinical_answer_text:
+        answer["clinical_answer_text"] = clinical_answer_text
     return {
         "thread_id": thread_id,
         "clarification_answer": answer,
@@ -225,6 +287,40 @@ def call_converse(
     or wrong data.
     """
     response = httpx.post(f"{base_url}{CONVERSE_PATH}", json=payload, timeout=timeout)
+    response.raise_for_status()
+    result: dict[str, Any] = response.json()
+    return result
+
+
+def analyze_media_via_api(
+    base_url: str,
+    media_bytes: bytes,
+    *,
+    filename: str,
+    content_type: str | None,
+    intake_payload: dict[str, Any],
+    generate_speech: bool = False,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """POST an uploaded image or video to POST /api/v1/media/analyze,
+    carrying the same intake fields build_conversation_payload's `intake`
+    shape would (symptoms, main_concern, duration, location, preferred
+    specialty, emergency, confirmed voice transcript) alongside the file.
+
+    Raises httpx.HTTPStatusError on a non-2xx response (e.g. 422 for an
+    unsupported/malformed upload, 413 for oversized) so the caller can show
+    a clear message instead of stale or fabricated results. This always
+    starts a new conversation turn — the returned thread_id is used for any
+    later clarification follow-up via call_converse.
+    """
+    files = {"file": (filename, media_bytes, content_type or "application/octet-stream")}
+    data = {
+        "intake_json": json.dumps(intake_payload),
+        "generate_speech": "true" if generate_speech else "false",
+    }
+    response = httpx.post(
+        f"{base_url}{MEDIA_ANALYZE_PATH}", files=files, data=data, timeout=timeout
+    )
     response.raise_for_status()
     result: dict[str, Any] = response.json()
     return result

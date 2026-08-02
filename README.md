@@ -11,14 +11,31 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
+Phase 2C: controlled image and video understanding.
+`POST /api/v1/media/analyze` accepts one directly-uploaded image (JPEG,
+PNG, WebP) or short video (MP4, MOV, WebM) — never a remote URL — and runs
+it through the same LangGraph conversation graph as `POST /api/v1/converse`
+(Phase 2B), with a dedicated vision-analysis step first. Visual analysis
+is controlled and non-diagnostic: only structured, schema-validated
+observations (never a diagnosis, disease name, treatment suggestion,
+urgency score, or emergency classification) can ever reach a response, and
+nothing is fabricated if analysis is unavailable or fails. See [Media
+intake](#media-intake-phase-2c) below.
+
+Phase 2B: LangGraph conversational orchestration with spoken output.
+`POST /api/v1/converse` runs a compiled LangGraph graph over the same
+intake → safety-gate → clarification → specialty-routing → provider-search
+→ response-composition pipeline, adding resumable clarification
+(`thread_id` + pause/resume) and optional Deepgram text-to-speech.
+`POST /api/v1/navigate` (Phase 1D, below) remains available unchanged for
+a simple one-shot, non-conversational request.
+
 Phase 2A: real voice intake with Groq Whisper.
 `POST /api/v1/voice/transcribe` accepts one uploaded audio file and returns
 a raw speech-to-text transcript — never persisted, never auto-submitted.
 The Streamlit demo UI requires the user to review and explicitly confirm
 the transcript before it flows through the existing Phase 1C `voice_input`
-contract into Phase 1D's `POST /api/v1/navigate` (intake → specialty
-routing → provider search). See [Voice intake](#voice-intake-phase-2a)
-below.
+contract. See [Voice intake](#voice-intake-phase-2a) below.
 
 Phase 1D: controlled specialty routing & navigation demo.
 `POST /api/v1/navigate` composes the Phase 1C intake contract, a new
@@ -412,6 +429,10 @@ uv run streamlit run streamlit_app/app.py
   audio file and transcribe it via Groq Whisper — see [Voice
   intake](#voice-intake-phase-2a) below for the full workflow and its
   confirmation requirement.
+- An **Image/video intake (optional)** section (Phase 2C) lets you upload
+  an image or short video, preview it locally, and click **"Analyze
+  media"** to run a full conversation turn — see [Media
+  intake](#media-intake-phase-2c) below.
 
 **Run the Streamlit API client tests** (payload construction + the HTTP
 calls, against a mock transport — no real network):
@@ -422,9 +443,9 @@ uv run pytest tests/test_streamlit_api_client.py
 
 ### What's deferred
 
-Real text/vision-model understanding (rather than deterministic keyword
-matching), a full LLM-provider abstraction, non-diagnostic visual
-description, and model-evaluation fixtures remain future work — see
+A full general-purpose LLM-provider abstraction (Groq is called directly
+where needed instead, following a validated/silent-fallback pattern) and
+model-evaluation fixtures remain future work — see
 [docs/architecture.md](docs/architecture.md)'s "Beyond Phase 1D" notes.
 Appointment scheduling/booking, authentication, and the production
 frontend are separate, later milestones.
@@ -477,6 +498,83 @@ Groq):
 
 ```bash
 uv run pytest tests/test_voice_transcription_service.py tests/test_voice_api.py
+```
+
+## Media intake (Phase 2C)
+
+`POST /api/v1/media/analyze` accepts one directly-uploaded image or short
+video and runs it through the same LangGraph conversation graph as
+`POST /api/v1/converse` (Phase 2B), with a dedicated vision-analysis step
+first. It never accepts a remote URL or filesystem path.
+
+- **Supported formats:** JPEG, PNG, WebP (images); MP4, MOV, WebM (video).
+  Detected by inspecting the actual file signature — never the filename
+  extension or the client-declared `Content-Type`.
+- **Size limits:** `IMAGE_MAX_UPLOAD_BYTES` (default 8,000,000 bytes) /
+  `VIDEO_MAX_UPLOAD_BYTES` (default 50,000,000 bytes).
+- **Image processing:** validated and re-encoded via Pillow — EXIF
+  orientation corrected, metadata stripped, and dimensions/pixel count
+  bounded by `IMAGE_MAX_DIMENSION_PX`/`IMAGE_MAX_PIXELS` (a
+  decompression-bomb guard).
+- **Video processing:** decoded via OpenCV in a temporary file (always
+  removed afterward, including on failure); duration
+  (`VIDEO_MAX_DURATION_SECONDS`) and dimensions
+  (`VIDEO_MAX_DIMENSION_PX`) are validated, then a bounded, deterministic
+  number of frames (`VIDEO_MAX_SAMPLED_FRAMES`, evenly spread across the
+  video) is sampled — the raw video is never sent to a model.
+- **Controlled visual observations only.** Each sampled frame is analyzed
+  by Groq's current, generally-available vision model
+  (`GROQ_VISION_MODEL`, default `qwen/qwen3.6-27b` — confirmed live
+  against Groq's own docs and an actual API call; no Groq vision model
+  currently supports strict JSON-schema output, so the request uses
+  `json_object` mode plus an explicit shape description in the prompt)
+  requesting only a bounded shape (observation type, body area, a short
+  visual description, visible attributes, a coarse confidence category,
+  and limitations) — never a diagnosis, disease name, treatment
+  suggestion, urgency score, or emergency classification. Every candidate
+  observation is independently re-validated against the
+  `VisionObservation` schema before being trusted; anything that violates
+  it is dropped, never fabricated into something safer-looking.
+- **Requires `GROQ_API_KEY` *and* `VISION_MODE=groq`** (see
+  `.env.example`) — unlike routing/response text, there is no non-model
+  "vision" fallback, so `VISION_MODE` defaults to `deterministic` (vision
+  analysis off) so that a real API key configured for other features never
+  causes an unexpected live call. If not enabled/configured, or if the
+  call fails, the endpoint still completes the full turn using any text or
+  voice information supplied, with a safe status note instead of visual
+  observations — it never fails the request just because vision analysis
+  didn't run.
+- **Nothing is persisted.** Uploaded media, extracted frames, and
+  temporary files are never written to the database or retained after the
+  request; only safe operational metadata (media kind, frame count,
+  status, timing) is logged — never filenames or media bytes.
+- Visual observations contribute to the same deterministic specialty
+  routing as symptoms/main concern/a confirmed voice transcript (Phase
+  1D/2A), and an image/video upload alone can satisfy intake's requirement
+  for a described concern — but they never influence emergency detection,
+  which remains strictly user-declared.
+
+**Example request:**
+
+```bash
+curl -X POST http://localhost:8000/api/v1/media/analyze \
+  -F "file=@photo.jpg" \
+  -F 'intake_json={"duration": {"value": 2, "unit": "days"}}'
+```
+
+**Streamlit workflow:** upload an image or short video, review the local
+preview, then click **"Analyze media"** — this runs the same full
+conversation turn as "Submit" (carrying whatever other form fields are
+already filled in) and displays the returned visual observations alongside
+the routing/provider-search/response sections. Selecting a new file always
+invalidates any prior media-analysis result.
+
+**Run media intake tests** (fake providers and synthetic in-memory
+images/video only — these never call Groq):
+
+```bash
+uv run pytest tests/test_media_validation_service.py tests/test_vision_schema.py \
+  tests/test_vision_analysis_service.py tests/test_media_api.py
 ```
 
 ## Validation
