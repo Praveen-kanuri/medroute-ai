@@ -16,9 +16,15 @@ this module), and never calls a model — every greeting reply below is a
 fixed, reviewed string.
 """
 
+import json
+import logging
 from typing import Any
 
+from app.config.settings import Settings
+from app.safety.constants import FORBIDDEN_TERMS
 from app.schemas.conversation import ConversationIntent
+
+logger = logging.getLogger(__name__)
 
 # The exact same fixed phrase set previously private to
 # response_composition_service.py, now shared so both modules recognize
@@ -142,3 +148,150 @@ def classify_new_turn_intent(
     if is_greeting_message(concern):
         return ConversationIntent.GREETING
     return ConversationIntent.MEDICAL_CONCERN
+
+
+# --- Phase 3B (optional, opt-in): LLM-backed general-conversation layer ----
+#
+# Both functions below are only ever consulted when Settings.conversation_
+# mode == "groq" AND a real Groq key is configured — see
+# app.graph.nodes.concern_relevance_agent_node, which is never reached at
+# all for a user-declared emergency turn (checked before this module is
+# ever consulted, mirroring classify_new_turn_intent's own precedence
+# above). Every failure mode (no key, network error, malformed output,
+# forbidden term) falls back to the existing deterministic behavior —
+# never raises, never blocks the turn.
+
+_RELEVANCE_SYSTEM_PROMPT = (
+    "You classify one message sent to a healthcare-appointment-navigation "
+    "assistant. Decide only whether it describes a specific health symptom or "
+    "medical concern the user wants help finding care for, versus general "
+    "conversation, small talk, or a message with no identifiable health "
+    "concern. Respond with only a JSON object of the exact form "
+    '{"is_health_concern": true or false}, and nothing else. Never diagnose, '
+    "never explain your reasoning, never include any other field or any text "
+    "outside the JSON object."
+)
+
+_GENERAL_CHAT_SYSTEM_PROMPT = (
+    "You are MedAI, a friendly medical-appointment-navigation assistant. The "
+    "user just said something that is not a specific health concern (general "
+    "conversation, small talk, or an off-topic question). Reply warmly and "
+    "briefly (at most two short sentences): acknowledge what they said in a "
+    "natural way, then gently invite them to describe a symptom or health "
+    "concern you can help them find care for. You must never diagnose, give "
+    "medical advice, or suggest or recommend any treatment. Respond with "
+    "only a JSON object of the exact form "
+    '{"response_text": "<your reply, at most 300 characters>"}, and nothing '
+    "else."
+)
+
+_GENERAL_CHAT_FALLBACK_TEXT = (
+    "I'm here to help you find the right care for a health concern — feel "
+    'free to describe a symptom (for example, "chest pain for the past two '
+    'days") and I can help guide you from there.'
+)
+
+_MAX_GENERAL_CHAT_RESPONSE_LENGTH = 400
+
+
+async def classify_concern_relevance(text: str, settings: Settings) -> bool | None:
+    """Ask whether `text` describes an identifiable health concern. Returns
+    True/False on a valid classification, or None when Groq isn't
+    configured or the call fails/returns something unparseable — callers
+    must treat None exactly like True (proceed as an ordinary medical
+    concern, today's unchanged behavior), never like False."""
+    if settings.groq_api_key is None:
+        return None
+    try:
+        from groq import AsyncGroq
+
+        client = AsyncGroq(api_key=settings.groq_api_key.get_secret_value())
+        response = await client.chat.completions.create(
+            model=settings.groq_text_model,
+            messages=[
+                {"role": "system", "content": _RELEVANCE_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            # No response_format={"type": "json_object"} here: empirically,
+            # Groq's server-side JSON-grammar validator for this reasoning
+            # model (openai/gpt-oss-20b) rejects some otherwise-valid
+            # completions outright (400 json_validate_failed) depending on
+            # the exact prompt/input combination -- reproduced as a 100%
+            # deterministic failure for this exact system prompt against a
+            # plain greeting, regardless of max_completion_tokens. Asking
+            # for JSON via the prompt alone and parsing the free-form
+            # response (already wrapped in a broad try/except that falls
+            # back to deterministic behavior on any parse failure) proved
+            # 100% reliable in the same trials that reproduced the bug.
+            temperature=0,
+            max_completion_tokens=300,
+            reasoning_effort="low",
+        )
+        content = response.choices[0].message.content
+        if not content:
+            return None
+        parsed = json.loads(content)
+        value = parsed.get("is_health_concern")
+    except Exception:
+        logger.warning(
+            "concern_relevance_classification_failed falling back to deterministic",
+            exc_info=True,
+        )
+        return None
+
+    return value if isinstance(value, bool) else None
+
+
+def _validate_general_chat_reply(candidate: object) -> str | None:
+    if not isinstance(candidate, str):
+        return None
+    stripped = candidate.strip()
+    if not stripped or len(stripped) > _MAX_GENERAL_CHAT_RESPONSE_LENGTH:
+        return None
+    lowered = stripped.lower()
+    if any(term in lowered for term in FORBIDDEN_TERMS):
+        return None
+    return stripped
+
+
+async def _groq_general_chat_reply(user_text: str, settings: Settings) -> str | None:
+    try:
+        from groq import AsyncGroq
+
+        client = AsyncGroq(api_key=settings.groq_api_key.get_secret_value())  # type: ignore[union-attr]
+        response = await client.chat.completions.create(
+            model=settings.groq_text_model,
+            messages=[
+                {"role": "system", "content": _GENERAL_CHAT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_text},
+            ],
+            # See classify_concern_relevance above: no response_format
+            # json_object constraint, for the same reliability reason.
+            temperature=0.4,
+            max_completion_tokens=500,
+            reasoning_effort="low",
+        )
+        content = response.choices[0].message.content
+        if not content:
+            return None
+        parsed = json.loads(content)
+        candidate = parsed.get("response_text")
+    except Exception:
+        logger.warning("general_chat_reply_failed falling back to deterministic", exc_info=True)
+        return None
+
+    return _validate_general_chat_reply(candidate)
+
+
+async def compose_general_chat_reply(user_text: str | None, settings: Settings) -> str:
+    """The reply for a turn classified as general chat (see
+    classify_concern_relevance) — deterministic and free by default, with
+    an optional Groq-backed, validated, warmly-phrased version when
+    conversation_mode="groq" and a real key is configured. Never a
+    diagnosis, never medical advice; always falls back to
+    _GENERAL_CHAT_FALLBACK_TEXT on any failure."""
+    if settings.conversation_mode == "groq" and settings.groq_configured and user_text:
+        reply = await _groq_general_chat_reply(user_text, settings)
+        if reply is not None:
+            return reply
+    return _GENERAL_CHAT_FALLBACK_TEXT

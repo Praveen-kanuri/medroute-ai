@@ -143,6 +143,61 @@ def test_apply_field_answer_onset_recognizes_gradual_and_progression() -> None:
     assert updated.onset.value == "gradual"
     assert updated.progression is not None
     assert updated.progression.value == "worsening"
+
+
+def test_apply_field_answer_onset_negated_worsening_is_not_recorded_as_worsening() -> None:
+    # Regression: a naive "wors" in lowered() substring check previously
+    # matched even "not worsted"/"hasn't worsened", asserting progression
+    # was worsening when the user said the opposite -- a real transcript
+    # bug (see test_summary_text_does_not_splice_raw_onset_answer_mid_sentence
+    # for the matching summary-level regression).
+    context = build_initial_context(
+        LEG_SWELLING_PROTOCOL, "leg swelling", duration_fact=None, source=FactSource.TEXT
+    )
+    updated = apply_field_answer(
+        context,
+        LEG_SWELLING_PROTOCOL,
+        "onset",
+        "It's not worsted, I can bear with it.",
+        source=FactSource.CLARIFICATION_ANSWER,
+    )
+    assert updated.progression is None
+
+    updated_positive = apply_field_answer(
+        context,
+        LEG_SWELLING_PROTOCOL,
+        "onset",
+        "It has been getting worse.",
+        source=FactSource.CLARIFICATION_ANSWER,
+    )
+    assert updated_positive.progression is not None
+    assert updated_positive.progression.value == "worsening"
+
+
+def test_summary_text_does_not_splice_raw_onset_answer_mid_sentence() -> None:
+    # Regression: when the user never says "sudden"/"gradual" and instead
+    # rambles (common in voice-dictated answers), _handle_onset's fallback
+    # still records their raw text verbatim as the onset fact (so the
+    # question is never re-asked) -- but the summary sentence must not
+    # splice that raw text into the middle of "with X onset", which reads
+    # as broken grammar and buries an unrelated remark inside what looks
+    # like a clinical onset descriptor.
+    context = build_initial_context(
+        LEG_SWELLING_PROTOCOL,
+        "My right leg is swollen.",
+        duration_fact=None,
+        source=FactSource.TEXT,
+    )
+    raw_answer = (
+        "It's not worsted. I mean, it's been just a few hours, but I can bear with it, "
+        "I feel like consulting a doctor."
+    )
+    updated = apply_field_answer(
+        context, LEG_SWELLING_PROTOCOL, "onset", raw_answer, source=FactSource.CLARIFICATION_ANSWER
+    )
+    summary = build_navigation_summary(LEG_SWELLING_PROTOCOL, updated)
+    assert ", with " not in summary.summary_of_reported_information
+    assert f'"{raw_answer}"' in summary.summary_of_reported_information
     assert "onset" in updated.answered_protocol_fields
 
 
@@ -388,3 +443,26 @@ def test_match_protocol_includes_explicit_left_right_and_one_sided() -> None:
     assert match_protocol("My right leg is swollen.") is not None
     assert match_protocol("I have one-sided leg swelling.") is not None
     assert match_protocol("I have unilateral leg swelling.") is not None
+
+
+def test_match_protocol_ignores_right_as_conversational_filler() -> None:
+    # Regression: real voice-dictated transcript ("That was, I told you.
+    # Right? Like, my leg is swollen. It's the same.") was previously
+    # misread as reporting *right-sided* leg swelling, because "right" was
+    # treated as anatomical laterality no matter where it appeared in the
+    # sentence -- even used here as a tag question ("...told you. Right?"),
+    # nowhere near "leg". This fabricated a clinical detail the user never
+    # reported, since unspecified laterality must NOT enter this protocol
+    # (see test_match_protocol_excludes_unspecified_laterality above).
+    assert match_protocol("That was, I told you. Right? Like, my leg is swollen.") is None
+    assert (
+        match_protocol("I think I told you all this already. Left it at that, my leg is swollen.")
+        is None
+    )
+
+
+def test_extract_laterality_still_recognizes_right_side_phrasing() -> None:
+    # The filler-word fix must not regress ordinary phrasing where the
+    # laterality word sits right next to an anatomical anchor rather than
+    # immediately before "leg" itself.
+    assert match_protocol("I have swelling in my leg, on the right side.") is not None

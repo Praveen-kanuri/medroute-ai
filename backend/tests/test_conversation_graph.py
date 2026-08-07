@@ -1744,3 +1744,184 @@ async def test_explicit_one_sided_wording_enters_the_protocol() -> None:
         Command(resume={"clinical_answer_text": "Gradual."}), config=config
     )
     assert onset_result["clinical_context"]["laterality"]["value"] == "one-sided"
+
+
+# --- Phase 3B: optional Groq-backed general-conversation layer -------------
+#
+# No database, no network, no real model call — the optional Groq path is
+# exercised only with a monkeypatched stand-in, never the real SDK/network.
+# concern_relevance_agent is a zero-cost, zero-behavior-change no-op with
+# the deterministic default (conversation_mode="deterministic"), so every
+# existing (pre-Phase-3B) test in this file continuing to pass unmodified
+# is itself evidence of that.
+
+
+def _fake_groq_json(content: str) -> type:
+    class _FakeMessage:
+        pass
+
+    _FakeMessage.content = content  # type: ignore[attr-defined]
+
+    class _FakeChoice:
+        message = _FakeMessage()
+
+    class _FakeResponse:
+        choices = [_FakeChoice()]
+
+    class _FakeCompletions:
+        async def create(self, *args: object, **kwargs: object) -> _FakeResponse:
+            return _FakeResponse()
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeAsyncGroq:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.chat = _FakeChat()
+
+    return _FakeAsyncGroq
+
+
+async def test_concern_relevance_agent_noop_when_deterministic() -> None:
+    graph = build_conversation_graph()
+    config = _config("t-relevance-deterministic")
+    state = {
+        "intake_request": {
+            "main_concern": "I'm feeling so bored, what should I do?",
+            "duration": {"value": 1, "unit": "hours"},
+        },
+        "generate_speech": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    # conversation_mode defaults to "deterministic" -- unchanged existing
+    # behavior: treated as an ordinary (if unmatched) medical concern.
+    assert result["detected_intent"] == "medical_concern"
+    path = _agent_path(result)
+    assert "concern_relevance_agent" in path
+    assert "medical_intake_agent" in path
+    assert "conversation_agent" not in path
+
+
+async def test_concern_relevance_agent_routes_to_general_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("groq.AsyncGroq", _fake_groq_json('{"is_health_concern": false}'))
+    graph = build_conversation_graph()
+    config = _config(
+        "t-relevance-general-chat",
+        settings=_settings(conversation_mode="groq", groq_api_key="fake-test-key-not-real"),
+    )
+    state = {
+        "intake_request": {"main_concern": "I'm feeling so bored, what should I do?"},
+        "generate_speech": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    assert result["detected_intent"] == "general_chat"
+    assert result.get("routing") is None
+    assert result.get("provider_search") is None
+    assert result.get("missing_fields") in (None, [])
+    # Regression guard: response_agent_node must preserve
+    # conversation_agent's already-finalized general-chat reply, never
+    # silently overwrite it with the medical-routing response composer's
+    # unrelated "could not match your concern" text.
+    assert "describe a symptom" in (result.get("response_text") or "").lower()
+    path = _agent_path(result)
+    assert "medical_intake_agent" not in path
+    assert "conversation_agent" in path
+
+
+async def test_concern_relevance_agent_keeps_real_concern_on_true_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("groq.AsyncGroq", _fake_groq_json('{"is_health_concern": true}'))
+    graph = build_conversation_graph()
+    config = _config(
+        "t-relevance-true",
+        settings=_settings(conversation_mode="groq", groq_api_key="fake-test-key-not-real"),
+    )
+    state = {
+        "intake_request": {"main_concern": "I think I have a headache, what do you recommend?"},
+        "generate_speech": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    assert result["detected_intent"] == "medical_concern"
+    path = _agent_path(result)
+    assert "medical_intake_agent" in path
+
+
+async def test_concern_relevance_agent_falls_back_when_groq_client_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RaisingGroq:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("simulated network failure — never a real call")
+
+    monkeypatch.setattr("groq.AsyncGroq", _RaisingGroq)
+    graph = build_conversation_graph()
+    config = _config(
+        "t-relevance-raises",
+        settings=_settings(conversation_mode="groq", groq_api_key="fake-test-key-not-real"),
+    )
+    state = {
+        "intake_request": {"main_concern": "I'm feeling so bored, what should I do?"},
+        "generate_speech": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    # Classification failure -> None -> treated exactly like True: proceeds
+    # as an ordinary medical concern, never silently dropped.
+    assert result["detected_intent"] == "medical_concern"
+    path = _agent_path(result)
+    assert "medical_intake_agent" in path
+
+
+async def test_concern_relevance_agent_never_consulted_for_declared_emergency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # SAFETY-CRITICAL: even a Groq classifier that would (wrongly) call
+    # this "general chat" must never be able to divert a user-declared
+    # emergency away from the safety gate. The fake here always answers
+    # "general_chat" -- if it were consulted at all, this test would fail.
+    monkeypatch.setattr("groq.AsyncGroq", _fake_groq_json('{"is_health_concern": false}'))
+    graph = build_conversation_graph()
+    config = _config(
+        "t-relevance-emergency",
+        settings=_settings(conversation_mode="groq", groq_api_key="fake-test-key-not-real"),
+    )
+    state = {
+        "intake_request": {
+            "main_concern": "I need help right now",
+            "emergency_concern": True,
+        },
+        "generate_speech": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    assert result["is_emergency"] is True
+    assert result["intake_response"]["status"] == "emergency"
+    assert "911" in result["response_text"]
+    assert result["detected_intent"] != "general_chat"
+    path = _agent_path(result)
+    assert "conversation_agent" not in path
+    assert "medical_intake_agent" in path
+
+
+async def test_concern_relevance_agent_skipped_on_vision_path(db_session: AsyncSession) -> None:
+    # The media/vision handoff to medical_intake_agent is unaffected by
+    # this node -- it is only ever wired into the text/voice path.
+    graph = build_conversation_graph()
+    media = PreparedMedia(
+        kind="image", frames=[MediaFrame(data=b"fake-jpeg", timestamp_seconds=None)]
+    )
+    provider = FakeVisionProvider(observations=[_VALID_OBSERVATION])
+    config = _config(
+        "t-relevance-vision-skip", session=db_session, media=media, vision_provider=provider
+    )
+    state = {
+        "intake_request": {"duration": {"value": 1, "unit": "days"}},
+        "generate_speech": False,
+        "media_pending": True,
+    }
+    result = await graph.ainvoke(state, config=config)
+    path = _agent_path(result)
+    assert "concern_relevance_agent" not in path
+    assert "vision_agent" in path
+    assert "medical_intake_agent" in path

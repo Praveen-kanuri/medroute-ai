@@ -55,7 +55,13 @@ def _looks_like_greeting(concern_text: str | None) -> bool:
 
 
 def _truncate_concern(concern_text: str) -> str:
-    collapsed = " ".join(concern_text.split())
+    # Strip a trailing sentence-ending mark first: this text is always
+    # interpolated into "I understand you've been experiencing {...}. " in
+    # _deterministic_response_text, which supplies its own closing period —
+    # without this, concern text that already ends in punctuation (common
+    # in free-form/voice-dictated input, e.g. "...same.") reads as a
+    # doubled "same..".
+    collapsed = " ".join(concern_text.split()).rstrip(".!?")
     if len(collapsed) <= _MAX_CONCERN_ACKNOWLEDGMENT_LENGTH:
         return collapsed
     return collapsed[:_MAX_CONCERN_ACKNOWLEDGMENT_LENGTH].rstrip() + "…"
@@ -204,9 +210,13 @@ async def _groq_rephrase(deterministic_text: str, settings: Settings) -> str | N
                 {"role": "system", "content": _RESPONSE_SYSTEM_PROMPT},
                 {"role": "user", "content": deterministic_text},
             ],
-            response_format={"type": "json_object"},
+            # No response_format={"type": "json_object"}: see
+            # app.services.intent_classification_service.classify_concern_relevance
+            # for the reproduced, deterministic Groq JSON-grammar-validator
+            # failure this avoids for this same reasoning model.
             temperature=0,
-            max_completion_tokens=200,
+            max_completion_tokens=400,
+            reasoning_effort="low",
         )
         content = response.choices[0].message.content
         if not content:

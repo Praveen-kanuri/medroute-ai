@@ -71,7 +71,13 @@ def _final_status_and_disclaimer(
     greeting that somehow never reached response_agent) — callers must
     fall back to normal processing in that case."""
     detected_intent_value = detected_intent
-    if detected_intent_value == ConversationIntent.GREETING.value:
+    if detected_intent_value in (
+        ConversationIntent.GREETING.value,
+        ConversationIntent.GENERAL_CHAT.value,
+    ):
+        # Neither ever reaches medical_intake_agent (both are handled
+        # entirely by conversation_agent), so intake_response is never
+        # set for either -- same treatment as a greeting.
         return IntakeStatus.READY_FOR_MULTIMODAL_PROCESSING, INTAKE_DISCLAIMER
 
     intake_response = values.get("intake_response")

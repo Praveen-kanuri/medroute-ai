@@ -27,18 +27,28 @@ _MAX_CLINICAL_ANSWER_TEXT_LENGTH = 2000
 
 
 class ConversationIntent(StrEnum):
-    """A lightweight, deterministic classification of what this turn's
-    request represents — set once per turn by the graph's supervisor
-    router (see app.graph.nodes.supervisor_router_node), never inferred by
-    an LLM. Used only to decide whether medical intake validation,
-    specialty routing, and provider search should run at all; it never
-    overrides emergency handling (supervisor_router checks emergency
-    signals before ever classifying a turn as a greeting)."""
+    """A classification of what this turn's request represents — set once
+    per turn by the graph's supervisor router / concern_relevance_agent
+    (see app.graph.nodes), never overridden by any later agent. Used only
+    to decide whether medical intake validation, specialty routing, and
+    provider search should run at all; it never overrides emergency
+    handling (supervisor_router checks emergency signals before ever
+    classifying a turn as a greeting or general chat, and
+    concern_relevance_agent never runs at all for a declared emergency)."""
 
     GREETING = "greeting"
     MEDICAL_CONCERN = "medical_concern"
     CLARIFICATION_ANSWER = "clarification_answer"
     UNSUPPORTED_OR_UNCLEAR = "unsupported_or_unclear"
+    # Phase 3B (optional, opt-in via Settings.conversation_mode="groq"):
+    # a turn that is not a fixed greeting phrase but also does not
+    # describe an identifiable health concern (general conversation,
+    # small talk, an off-topic question) — see
+    # app.services.intent_classification_service.classify_concern_relevance.
+    # Never set when conversation_mode stays "deterministic" (the
+    # default), so existing behavior is unchanged unless explicitly
+    # opted into.
+    GENERAL_CHAT = "general_chat"
 
 
 class ClarificationAnswer(BaseModel):

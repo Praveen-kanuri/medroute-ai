@@ -1,15 +1,21 @@
 """HTTP-level tests for POST /api/v1/converse (Phase 2B).
 
-Never calls Groq or Deepgram — routing_mode/response_mode default to
-"deterministic", and every test either supplies no generate_speech (no
-provider is ever attempted) or, for the one test that explicitly checks
-for no network calls, overrides get_settings to guarantee neither speech
-provider is configured — this must never depend on whether the
-developer's local .env file happens to have real API keys set.
+Never calls Groq or Deepgram — see _no_live_groq_or_deepgram_calls below,
+an autouse fixture that forces safe, network-free settings for every test
+in this file regardless of what the developer's local .env happens to
+contain (it may well have real CONVERSATION_MODE=groq / GROQ_API_KEY set
+for manual live testing elsewhere in this project). This file's tests
+assert on the deterministic-mode response shape throughout; a live Groq
+call succeeding would silently change intent/routing/response_text for
+several of them (this happened for real: once a real Groq bug elsewhere
+was fixed, three tests here started intermittently classifying
+"zzz qqq unrelated words" as general_chat instead of medical_concern,
+because they were never actually hermetic to begin with).
 """
 
 import logging
 import socket
+from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +26,17 @@ from app.main import app
 ENDPOINT = "/api/v1/converse"
 
 SYNTHETIC_TRANSCRIPT_MARKER = "synthetic-marker-transcript-9d3e7c"
+
+
+@pytest.fixture(autouse=True)
+def _no_live_groq_or_deepgram_calls() -> Iterator[None]:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None, groq_api_key=None, deepgram_api_key=None
+    )
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
 
 
 def test_fresh_turn_unmatched_routing_returns_response_text() -> None:
@@ -169,36 +186,28 @@ def test_invalid_request_body_returns_422() -> None:
 
 
 def test_endpoint_makes_no_external_network_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Force neither speech provider to be configured, regardless of what
-    # the developer's local .env file happens to contain -- this test's
-    # "no network calls" guarantee must never depend on ambient
-    # environment state. socket.create_connection is additionally patched
+    # The autouse fixture above already guarantees neither speech provider
+    # is configured. socket.create_connection is additionally patched here
     # as a second line of defense for any synchronous connection attempt
     # (it does not intercept httpx's async connections, which is exactly
-    # why the settings override above is the real guarantee here).
+    # why the settings override is the real guarantee here).
     def _forbidden_create_connection(*args: object, **kwargs: object) -> None:
         raise AssertionError("converse endpoint attempted an outbound network connection")
 
     monkeypatch.setattr(socket, "create_connection", _forbidden_create_connection)
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        _env_file=None, groq_api_key=None, deepgram_api_key=None
-    )
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                ENDPOINT,
-                json={
-                    "intake": {
-                        "main_concern": "zzz qqq unrelated words",
-                        "duration": {"value": 1, "unit": "days"},
-                    },
-                    "generate_speech": True,
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "intake": {
+                    "main_concern": "zzz qqq unrelated words",
+                    "duration": {"value": 1, "unit": "days"},
                 },
-            )
-        assert response.status_code == 200
-        assert response.json()["audio"] is None
-    finally:
-        app.dependency_overrides.pop(get_settings, None)
+                "generate_speech": True,
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["audio"] is None
 
 
 def test_no_secrets_in_response_body() -> None:
@@ -218,6 +227,10 @@ def test_no_secrets_in_response_body() -> None:
 
 
 def test_no_synthetic_transcript_text_in_captured_logs(caplog: pytest.LogCaptureFixture) -> None:
+    # The autouse fixture above guarantees no real Groq call happens here
+    # (concern_relevance_agent_node would otherwise make one whose SDK-level
+    # DEBUG logging includes the full request body -- leaking the transcript
+    # into caplog.text regardless of anything the app itself logs).
     with caplog.at_level(logging.DEBUG):
         with TestClient(app) as client:
             response = client.post(

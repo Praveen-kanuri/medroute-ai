@@ -134,9 +134,13 @@ async def _groq_route(
                 {"role": "system", "content": _ROUTING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content or "(no details provided)"},
             ],
-            response_format={"type": "json_object"},
+            # No response_format={"type": "json_object"}: see
+            # app.services.intent_classification_service.classify_concern_relevance
+            # for the reproduced, deterministic Groq JSON-grammar-validator
+            # failure this avoids for this same reasoning model.
             temperature=0,
-            max_completion_tokens=100,
+            max_completion_tokens=300,
+            reasoning_effort="low",
         )
         content = response.choices[0].message.content
         if not content:

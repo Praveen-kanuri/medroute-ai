@@ -126,6 +126,24 @@ async def test_routed_without_providers_says_so() -> None:
     assert "No matching providers" in text
 
 
+async def test_concern_acknowledgment_does_not_double_up_trailing_punctuation() -> None:
+    # Regression: concern_text ending in its own punctuation (very common
+    # in free-form/voice-dictated input, e.g. "...It's the same.") was
+    # spliced verbatim into "I understand you've been experiencing {...}. ",
+    # producing a visible doubled "same..".
+    text = await compose_response(
+        is_emergency=False,
+        missing_fields=[],
+        clarification_questions=[],
+        routing={"specialty_slug": "cardiology", "specialty_display_name": "Cardiology"},
+        provider_search={"results": []},
+        settings=_settings(),
+        concern_text="It's the same.",
+    )
+    assert ".." not in text
+    assert "It's the same." in text
+
+
 @pytest.mark.parametrize(
     ("is_emergency", "routing", "provider_search"),
     [

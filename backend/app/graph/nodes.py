@@ -54,7 +54,9 @@ from app.services.clinical_intake_service import (
 )
 from app.services.duration_extraction import extract_duration_from_transcript
 from app.services.intent_classification_service import (
+    classify_concern_relevance,
     classify_new_turn_intent,
+    compose_general_chat_reply,
     greeting_reply_text,
 )
 from app.services.intent_classification_service import (
@@ -198,12 +200,79 @@ def route_after_supervisor(state: ConversationState) -> str:
     return state.get("next_agent") or "medical_intake_agent"
 
 
-def conversation_agent_node(state: ConversationState) -> dict[str, Any]:
-    """Handles greeting/small-talk turns only. Restricted tools: a fixed,
-    reviewed reply-text lookup (see
+async def concern_relevance_agent_node(
+    state: ConversationState, config: RunnableConfig
+) -> dict[str, Any]:
+    """Phase 3B (optional, opt-in via Settings.conversation_mode="groq"):
+    the only place in the graph that may reclassify an ordinary
+    medical_concern turn as general chat, inserted between
+    supervisor_router and medical_intake_agent (see app/graph/build.py) —
+    never bypassed, but a complete zero-cost, zero-risk no-op whenever
+    conversation_mode stays "deterministic" (the default) or Groq isn't
+    configured, in which case this always falls through to
+    medical_intake_agent exactly as before this node existed.
+
+    SAFETY: never consulted for a user-declared emergency turn — checked
+    directly here, independent of supervisor_router_node, so an LLM
+    misclassification can never divert a declared emergency away from the
+    safety gate. This is the only node in the graph allowed to route a
+    medical_concern turn to conversation_agent instead of
+    medical_intake_agent; it never diagnoses, and a failed/unconfigured
+    check always defaults to treating the turn as a genuine concern
+    (proceeding to medical_intake_agent), never the other way around."""
+    intake_request = state.get("intake_request") or {}
+    is_emergency = bool(intake_request.get("emergency_concern")) or bool(
+        intake_request.get("emergency_signals")
+    )
+    settings: Settings | None = _configurable(config).get("settings")
+    concern = _concern_text(intake_request)
+
+    is_general_chat = False
+    if not is_emergency and settings is not None and concern is not None:
+        if settings.conversation_mode == "groq" and settings.groq_configured:
+            is_health_concern = await classify_concern_relevance(concern, settings)
+            is_general_chat = is_health_concern is False
+
+    if is_general_chat:
+        return {
+            "next_agent": "conversation_agent",
+            "detected_intent": ConversationIntent.GENERAL_CHAT.value,
+            "active_agent": "concern_relevance_agent",
+            "conversation_history": [{"agent": "concern_relevance_agent", "is_general_chat": True}],
+        }
+    return {
+        "next_agent": "medical_intake_agent",
+        "active_agent": "concern_relevance_agent",
+        "conversation_history": [{"agent": "concern_relevance_agent", "is_general_chat": False}],
+    }
+
+
+def route_after_concern_relevance(state: ConversationState) -> str:
+    return state.get("next_agent") or "medical_intake_agent"
+
+
+async def conversation_agent_node(
+    state: ConversationState, config: RunnableConfig
+) -> dict[str, Any]:
+    """Handles greeting AND general-chat turns. Restricted tools: for a
+    greeting, a fixed, reviewed reply-text lookup (see
     app.services.intent_classification_service.greeting_reply_text) —
-    never provider search, never intake validation, never a model call.
-    Its output is finalized (not re-derived) by response_agent."""
+    unchanged, still zero-cost, zero-model-call. For general chat (Phase
+    3B, only ever reachable via concern_relevance_agent_node — see that
+    node's docstring for the safety guarantees this relies on), a
+    deterministic-by-default, optionally Groq-backed redirect reply (see
+    compose_general_chat_reply) — never provider search, never intake
+    validation, never a diagnosis or medical advice. Its output is
+    finalized (not re-derived) by response_agent."""
+    if state.get("detected_intent") == ConversationIntent.GENERAL_CHAT.value:
+        settings: Settings = _configurable(config)["settings"]
+        reply = await compose_general_chat_reply(state.get("current_input"), settings)
+        return {
+            "active_agent": "conversation_agent",
+            "response_text": reply,
+            "conversation_history": [{"agent": "conversation_agent", "intent": "general_chat"}],
+        }
+
     reply = greeting_reply_text(state.get("current_input"))
     return {
         "active_agent": "conversation_agent",
@@ -630,14 +699,21 @@ async def response_agent_node(state: ConversationState, config: RunnableConfig) 
     results, or the emergency determination. Never called for a paused
     clarification turn — that question is returned directly by the
     orchestration service before this node would run."""
-    if state.get("detected_intent") == ConversationIntent.GREETING.value:
-        # conversation_agent already produced the final, safe reply --
-        # finalize it unchanged rather than re-deriving new text.
+    if state.get("detected_intent") in (
+        ConversationIntent.GREETING.value,
+        ConversationIntent.GENERAL_CHAT.value,
+    ):
+        # conversation_agent already produced the final, safe reply for
+        # either intent -- finalize it unchanged rather than re-deriving
+        # new text via the medical-routing response composer below, which
+        # has no notion of either.
         text = state.get("response_text") or ""
         return {
             "active_agent": "response_agent",
             "response_text": text,
-            "conversation_history": [{"agent": "response_agent", "intent": "greeting"}],
+            "conversation_history": [
+                {"agent": "response_agent", "intent": state.get("detected_intent")}
+            ],
         }
 
     settings: Settings = _configurable(config)["settings"]

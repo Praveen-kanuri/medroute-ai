@@ -1,8 +1,9 @@
-"""Phase 2B-2D/3A: compiles the MedRoute AI multi-agent conversation graph.
+"""Phase 2B-2D/3A/3B: compiles the MedRoute AI multi-agent conversation graph.
 
-    supervisor_router -> [conversation_agent | vision_agent | medical_intake_agent]
+    supervisor_router -> [conversation_agent | vision_agent | concern_relevance_agent]
     conversation_agent -> response_agent
     vision_agent -> medical_intake_agent
+    concern_relevance_agent -> [conversation_agent (general chat) | medical_intake_agent]
     medical_intake_agent -> safety_gate
     safety_gate -> [clarification | response_agent]
     clarification -> [medical_intake_agent (resumed) | clinical_intake_agent]
@@ -33,6 +34,16 @@ deterministic safety step (never a model call) that always runs
 immediately after the protocol's red-flag question is answered and always
 before specialty/provider routing -- see app/safety/red_flag_rules.py.
 
+concern_relevance_agent (Phase 3B, optional/opt-in via
+Settings.conversation_mode="groq") sits between supervisor_router and
+medical_intake_agent for the text/voice (non-media) path only -- vision_
+agent's own handoff to medical_intake_agent is unaffected. It is a
+complete zero-cost no-op (falls straight through to medical_intake_agent)
+whenever conversation_mode stays "deterministic" (the default) or Groq
+isn't configured, and it is never even consulted for a user-declared
+emergency turn -- see app.graph.nodes.concern_relevance_agent_node's
+docstring for the safety guarantee this relies on.
+
 Reuses existing services as controlled tools inside each node (see
 app/graph/nodes.py) — this module only wires up the graph's shape. Each
 agent has a bounded responsibility and restricted tools; text_to_speech is
@@ -49,6 +60,7 @@ from app.graph.nodes import (
     clarification_node,
     clinical_intake_agent_node,
     clinical_red_flag_gate_node,
+    concern_relevance_agent_node,
     conversation_agent_node,
     medical_intake_agent_node,
     provider_search_agent_node,
@@ -56,6 +68,7 @@ from app.graph.nodes import (
     route_after_clarification,
     route_after_clinical_intake,
     route_after_clinical_red_flag_gate,
+    route_after_concern_relevance,
     route_after_safety_gate,
     route_after_specialty_routing,
     route_after_supervisor,
@@ -84,6 +97,7 @@ def build_conversation_graph() -> ConversationGraph:
     graph.add_node("supervisor_router", supervisor_router_node)
     graph.add_node("conversation_agent", conversation_agent_node)
     graph.add_node("vision_agent", vision_agent_node)
+    graph.add_node("concern_relevance_agent", concern_relevance_agent_node)
     graph.add_node("medical_intake_agent", medical_intake_agent_node)
     graph.add_node("safety_gate", safety_gate_node)
     graph.add_node("clarification", clarification_node)
@@ -101,11 +115,19 @@ def build_conversation_graph() -> ConversationGraph:
         {
             "conversation_agent": "conversation_agent",
             "vision_agent": "vision_agent",
-            "medical_intake_agent": "medical_intake_agent",
+            "medical_intake_agent": "concern_relevance_agent",
         },
     )
     graph.add_edge("conversation_agent", "response_agent")
     graph.add_edge("vision_agent", "medical_intake_agent")
+    graph.add_conditional_edges(
+        "concern_relevance_agent",
+        route_after_concern_relevance,
+        {
+            "conversation_agent": "conversation_agent",
+            "medical_intake_agent": "medical_intake_agent",
+        },
+    )
     graph.add_edge("medical_intake_agent", "safety_gate")
     graph.add_conditional_edges(
         "safety_gate",

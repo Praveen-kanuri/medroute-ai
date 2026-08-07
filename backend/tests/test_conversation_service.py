@@ -12,6 +12,8 @@ is itself evidence the short-circuit works (a real turn would fail fast
 against a None session the moment provider_search_node ran).
 """
 
+import pytest
+
 from app.config.settings import Settings
 from app.providers.text_to_speech.fake import FakeTextToSpeechProvider
 from app.schemas.multimodal_intake import MultimodalIntakeRequest, VoiceInput
@@ -95,3 +97,70 @@ async def test_thread_id_is_preserved_for_a_greeting_reply() -> None:
         session=None,  # type: ignore[arg-type]
     )
     assert response.thread_id == "caller-supplied-thread-id"
+
+
+# --- Phase 3B: general-conversation layer through the full service path ----
+#
+# Regression coverage for a real bug: general_chat, like greeting, never
+# reaches medical_intake_agent (so state never gets an intake_response),
+# but _final_status_and_disclaimer originally only special-cased
+# GREETING — a general_chat turn raised an AssertionError deep in
+# run_conversation_turn instead of returning a response. Graph-level tests
+# that call graph.ainvoke() directly never caught this, since the bug was
+# specifically in run_conversation_turn's own status/disclaimer resolution
+# — this is why these tests go through run_conversation_turn itself, the
+# same entry point the API layer uses.
+
+
+def _fake_groq_json(content: str) -> type:
+    class _FakeMessage:
+        pass
+
+    _FakeMessage.content = content  # type: ignore[attr-defined]
+
+    class _FakeChoice:
+        message = _FakeMessage()
+
+    class _FakeResponse:
+        choices = [_FakeChoice()]
+
+    class _FakeCompletions:
+        async def create(self, *args: object, **kwargs: object) -> _FakeResponse:
+            return _FakeResponse()
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeAsyncGroq:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.chat = _FakeChat()
+
+    return _FakeAsyncGroq
+
+
+async def test_general_chat_completes_successfully_through_run_conversation_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("groq.AsyncGroq", _fake_groq_json('{"is_health_concern": false}'))
+    response = await run_conversation_turn(
+        thread_id=None,
+        intake=MultimodalIntakeRequest(main_concern="I'm feeling so bored, what should I do?"),
+        clarification_answer=None,
+        generate_speech=False,
+        settings=_settings(conversation_mode="groq", groq_api_key="fake-test-key-not-real"),
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert response.intent == "general_chat"
+    assert response.status == "ready_for_multimodal_processing"
+    assert response.routing is None
+    assert response.provider_search is None
+    assert response.missing_fields == []
+    # Regression guard: response_agent_node must preserve
+    # conversation_agent's already-finalized general-chat reply, never
+    # silently overwrite it with the unrelated medical-routing response
+    # composer's "could not match your concern to a supported specialty"
+    # text (a real bug this test caught).
+    assert response.response_text is not None
+    assert "describe a symptom" in response.response_text.lower()
+    assert "could not match" not in response.response_text.lower()

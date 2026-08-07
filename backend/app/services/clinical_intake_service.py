@@ -91,17 +91,43 @@ def _detect_leg_swelling(text: str) -> bool:
     return _extract_laterality(text) in ("left", "right", "one-sided")
 
 
+_LATERALITY_ANCHOR_TOKENS = _LEG_SWELLING_LOCATION_TOKENS | {"side", "sided"}
+
+
+def _mentioned_as_laterality(tokens: list[str], word: str) -> bool:
+    """Whether `word` ("left"/"right") appears immediately next to an
+    anatomical anchor token (leg/calf/ankle/side/...), e.g. "left leg" or
+    "swelling on the right side". Plain proximity anywhere in the sentence
+    is deliberately NOT enough: free/voice-dictated speech is full of
+    "right"/"left" used as filler or tag-question ("Right?", "left it at
+    that") with nothing to do with anatomy, and the whole point of this
+    protocol is unilateral (one-sided) leg swelling specifically — a
+    misread laterality would fabricate a clinical detail the user never
+    reported (see this module's tests for the transcript that motivated
+    this)."""
+    for i, token in enumerate(tokens):
+        if token != word:
+            continue
+        neighbors = tokens[max(0, i - 1) : i] + tokens[i + 1 : i + 2]
+        if any(neighbor in _LATERALITY_ANCHOR_TOKENS for neighbor in neighbors):
+            return True
+    return False
+
+
 def _extract_laterality(text: str) -> str | None:
-    tokens = set(_tokenize(text))
-    has_left = "left" in tokens
-    has_right = "right" in tokens
-    if "bilateral" in tokens or "both" in tokens or (has_left and has_right):
+    tokens = _tokenize(text)
+    token_set = set(tokens)
+    if "bilateral" in token_set or "both" in token_set:
+        return "bilateral"
+    has_left = _mentioned_as_laterality(tokens, "left")
+    has_right = _mentioned_as_laterality(tokens, "right")
+    if has_left and has_right:
         return "bilateral"
     if has_left:
         return "left"
     if has_right:
         return "right"
-    if "unilateral" in tokens or ("one" in tokens and "sided" in tokens):
+    if "unilateral" in token_set or ("one" in token_set and "sided" in token_set):
         return "one-sided"
     return None
 
@@ -136,6 +162,13 @@ _RISK_FACTOR_PHRASES: dict[str, list[str]] = {
 }
 
 
+_PROGRESSION_PHRASES: dict[str, list[str]] = {
+    "worsening": ["worse", "worsening", "worsened"],
+    "improving": ["better", "improving", "improved"],
+    "stable": ["stable", "unchanged"],
+}
+
+
 def _handle_onset(
     context: ClinicalContext, text: str, source: FactSource, is_direct_answer: bool
 ) -> tuple[ClinicalContext, bool]:
@@ -157,21 +190,18 @@ def _handle_onset(
         )
         found = True
 
-    if "wors" in lowered:
-        context.progression = ClinicalFact(
-            value="worsening", confidence=FactConfidence.DERIVED, source=source
-        )
-        found = True
-    elif "better" in lowered or "improv" in lowered:
-        context.progression = ClinicalFact(
-            value="improving", confidence=FactConfidence.DERIVED, source=source
-        )
-        found = True
-    elif "stable" in lowered or "unchanged" in lowered:
-        context.progression = ClinicalFact(
-            value="stable", confidence=FactConfidence.DERIVED, source=source
-        )
-        found = True
+    # Negation-aware, unlike a plain substring check: "not worse"/"hasn't
+    # worsened" must never be recorded as progression=worsening (a real bug
+    # this replaced -- a naive "wors" in lowered matched even "not worsted",
+    # asserting the opposite of what the user said in the final summary).
+    for label, phrases in _PROGRESSION_PHRASES.items():
+        status = classify_mention(text, phrases, allow_blanket_negation=False)
+        if status == MentionStatus.AFFIRMED:
+            context.progression = ClinicalFact(
+                value=label, confidence=FactConfidence.DERIVED, source=source
+            )
+            found = True
+            break
 
     return context, found
 
@@ -554,11 +584,24 @@ def _summary_text(context: ClinicalContext) -> str:
     sentence = f"You reported {location_phrase}"
     if context.duration is not None:
         sentence += f" for {context.duration.value}"
+    # Only "sudden"/"gradual" are short, grammatical onset descriptors fit
+    # to splice into this clause. _handle_onset's fallback also records the
+    # user's raw direct-answer text verbatim (e.g. rambling voice-dictated
+    # speech with no explicit "sudden"/"gradual") when neither keyword is
+    # present -- that raw text is never spliced mid-sentence here (it would
+    # read as broken grammar); it is instead appended as its own quoted
+    # sentence below, once, alongside progression if either is known.
+    raw_onset_note: str | None = None
     if context.onset is not None:
-        sentence += f", with {context.onset.value} onset"
+        if context.onset.value in ("sudden", "gradual"):
+            sentence += f", with {context.onset.value} onset"
+        else:
+            raw_onset_note = context.onset.value
     if context.progression is not None:
         sentence += f" that has been {context.progression.value}"
     sentence += "."
+    if raw_onset_note is not None:
+        sentence += f' You described the onset as: "{raw_onset_note}"'
 
     feature_values = [fact.value.replace("_", " ") for fact in context.associated_features]
     if feature_values:

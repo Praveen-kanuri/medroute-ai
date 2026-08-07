@@ -347,12 +347,12 @@ def _render_assistant_result_details(result: dict[str, Any], *, turn_id: str) ->
     """Supplementary structured detail for one assistant chat turn —
     status badge, visual observations, specialty routing, and provider
     results — rendered under the turn's plain-text reply (already shown by
-    the caller). Never rendered for a greeting reply: routing/provider
-    fields are always None/empty for that intent, since greetings never
-    reach specialty routing or provider search (see
+    the caller). Never rendered for a greeting or general-chat reply:
+    routing/provider fields are always None/empty for both intents, since
+    neither ever reaches specialty routing or provider search (see
     app/services/intent_classification_service.py)."""
     intent = result.get("intent")
-    if intent != "greeting":
+    if intent not in ("greeting", "general_chat"):
         status = result.get("status") or ""
         _status_badge(status)
         media_note = result.get("media_note")

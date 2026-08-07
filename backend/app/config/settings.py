@@ -86,6 +86,20 @@ class Settings(BaseSettings):
     # always use the deterministic default.
     response_mode: str = "deterministic"
 
+    # "deterministic" (default): a turn that isn't a fixed greeting phrase
+    # is always treated as a medical concern, exactly as before this
+    # setting existed. "groq" additionally asks a Groq-backed classifier
+    # (only when groq_configured is also true) whether a turn genuinely
+    # describes a health concern versus general conversation/small talk —
+    # never anything diagnostic, only that one yes/no distinction — and,
+    # if not, composes a warm redirect reply (also Groq-backed, validated
+    # against the same forbidden-term list as response_mode, falling back
+    # to a fixed deterministic redirect on any failure). Never consulted
+    # for a user-declared emergency turn, which always proceeds straight
+    # to the safety gate regardless of this setting. Tests always use the
+    # deterministic default.
+    conversation_mode: str = "deterministic"
+
     # Phase 2C vision analysis (POST /api/v1/media/analyze). Mirrors
     # routing_mode/response_mode above: "deterministic" (default) never
     # calls a vision model — a directly-uploaded image/video still flows
