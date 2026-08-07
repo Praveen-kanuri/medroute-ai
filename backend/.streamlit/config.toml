@@ -1,0 +1,11 @@
+# MedRoute AI demo UI theme — a dark, teal/blue-accented base so the
+# custom CSS in streamlit_app/app.py only ever needs to add gradients,
+# panel borders, and spacing on top of an already accessible, high-contrast
+# foundation. If app.py's <style> block fails to load for any reason, the
+# UI still renders cleanly using this theme alone.
+[theme]
+base = "dark"
+primaryColor = "#2dd4bf"
+backgroundColor = "#0b1120"
+secondaryBackgroundColor = "#111827"
+textColor = "#e2e8f0"

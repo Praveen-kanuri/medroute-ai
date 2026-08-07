@@ -63,13 +63,22 @@ def _tokenize(text: str) -> set[str]:
     return {word.strip(".,!?;:\"'()").lower() for word in text.split()} - {""}
 
 
-def _deterministic_match(symptoms: Sequence[str], main_concern: str | None) -> SpecialtySeed | None:
+def _deterministic_match(
+    symptoms: Sequence[str],
+    main_concern: str | None,
+    voice_transcript: str | None,
+    vision_observation_text: str | None = None,
+) -> SpecialtySeed | None:
     """Best-scoring keyword overlap. Returns None when nothing scores > 0."""
     tokens: set[str] = set()
     for symptom in symptoms:
         tokens |= _tokenize(symptom)
     if main_concern:
         tokens |= _tokenize(main_concern)
+    if voice_transcript:
+        tokens |= _tokenize(voice_transcript)
+    if vision_observation_text:
+        tokens |= _tokenize(vision_observation_text)
     if not tokens:
         return None
 
@@ -84,9 +93,14 @@ def _deterministic_match(symptoms: Sequence[str], main_concern: str | None) -> S
 
 
 def _deterministic_route(
-    symptoms: Sequence[str], main_concern: str | None
+    symptoms: Sequence[str],
+    main_concern: str | None,
+    voice_transcript: str | None,
+    vision_observation_text: str | None = None,
 ) -> SpecialtyRoutingResult:
-    matched = _deterministic_match(symptoms, main_concern)
+    matched = _deterministic_match(
+        symptoms, main_concern, voice_transcript, vision_observation_text
+    )
     if matched is None:
         return SpecialtyRoutingResult(
             specialty_slug=None,
@@ -120,9 +134,13 @@ async def _groq_route(
                 {"role": "system", "content": _ROUTING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content or "(no details provided)"},
             ],
-            response_format={"type": "json_object"},
+            # No response_format={"type": "json_object"}: see
+            # app.services.intent_classification_service.classify_concern_relevance
+            # for the reproduced, deterministic Groq JSON-grammar-validator
+            # failure this avoids for this same reasoning model.
             temperature=0,
-            max_completion_tokens=100,
+            max_completion_tokens=300,
+            reasoning_effort="low",
         )
         content = response.choices[0].message.content
         if not content:
@@ -150,12 +168,28 @@ async def route_to_specialty(
     preferred_specialty: str | None,
     symptoms: Sequence[str],
     main_concern: str | None,
+    voice_transcript: str | None = None,
+    vision_observation_text: str | None = None,
     settings: Settings,
 ) -> SpecialtyRoutingResult:
     """Decide which catalog specialty (if any) applies. Never diagnoses.
 
     An explicit preferred_specialty always wins (after catalog validation),
     bypassing any keyword matching or model call entirely.
+
+    voice_transcript (Phase 2A) is a caller-confirmed speech-to-text
+    transcript (see MultimodalIntakeRequest.voice_input.transcript) and is
+    folded into the same deterministic keyword matching as symptoms/
+    main_concern — it is never used to detect an emergency or infer
+    anything beyond a specialty keyword match.
+
+    vision_observation_text (Phase 2C) is the flattened, already
+    schema-validated text of controlled VisionObservation objects (see
+    app.schemas.vision) from an uploaded image or sampled video frames.
+    It is folded into the same deterministic keyword matching exactly like
+    voice_transcript above — never used to detect an emergency, and never
+    passed through the optional Groq-backed path below (off by default,
+    never exercised in tests, and out of scope for this change).
     """
     if preferred_specialty is not None:
         seed = _CATALOG_BY_SLUG.get(preferred_specialty)
@@ -178,4 +212,4 @@ async def route_to_specialty(
         if groq_result is not None:
             return groq_result
 
-    return _deterministic_route(symptoms, main_concern)
+    return _deterministic_route(symptoms, main_concern, voice_transcript, vision_observation_text)

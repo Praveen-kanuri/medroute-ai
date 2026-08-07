@@ -86,6 +86,140 @@ def test_invalid_preferred_specialty_yields_unmatched_routing() -> None:
     assert body["provider_search"] is None
 
 
+def test_voice_only_transcript_can_route_to_specialty() -> None:
+    # Phase 2A: no symptoms/main_concern at all — only a confirmed voice
+    # transcript — must still be able to drive specialty routing.
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "duration": {"value": 2, "unit": "days"},
+                "voice_input": {
+                    "transcript": "chest pain and heart palpitations",
+                    "language": "en",
+                },
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intake"]["status"] == "ready_for_multimodal_processing"
+    assert body["routing"]["specialty_slug"] == "cardiology"
+    assert body["routing"]["method"] == "keyword_match"
+    assert body["provider_search"] is not None
+
+
+def test_voice_transcript_with_explicit_duration_skips_clarification() -> None:
+    # Phase 2A clarification-workflow fix: an explicit duration stated in
+    # the confirmed transcript itself must satisfy the duration
+    # requirement — no structured "duration" field, and no clarification.
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "voice_input": {
+                    "transcript": "chest pain and heart palpitations for the past three days",
+                    "language": "en",
+                },
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intake"]["status"] == "ready_for_multimodal_processing"
+    assert "duration" not in body["intake"]["missing_fields"]
+    assert body["intake"]["normalized_intake"]["duration"] == {"value": 3, "unit": "days"}
+    assert body["routing"]["specialty_slug"] == "cardiology"
+    assert body["provider_search"] is not None
+
+
+def test_voice_transcript_with_ambiguous_duration_still_needs_clarification() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "voice_input": {
+                    "transcript": "chest pain and heart palpitations for a while",
+                    "language": "en",
+                },
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intake"]["status"] == "needs_clarification"
+    assert body["intake"]["missing_fields"] == ["duration"]
+    assert body["routing"] is None
+
+
+def test_followup_resubmission_merges_duration_and_preserves_voice_transcript() -> None:
+    # Simulates the Streamlit follow-up workflow at the HTTP level: an
+    # initial submission with only a confirmed voice transcript (no
+    # explicit duration in it) triggers needs_clarification; merging just
+    # a "duration" answer into that same payload and resubmitting must
+    # preserve the original transcript untouched and reach routing.
+    transcript = "chest pain and heart palpitations"
+    initial_payload = {
+        "emergency_concern": False,
+        "voice_input": {"transcript": transcript, "language": "en"},
+    }
+
+    with TestClient(app) as client:
+        first_response = client.post(ENDPOINT, json=initial_payload)
+        assert first_response.status_code == 200
+        first_body = first_response.json()
+        assert first_body["intake"]["status"] == "needs_clarification"
+        assert first_body["intake"]["missing_fields"] == ["duration"]
+
+        merged_payload = {**initial_payload, "duration": {"value": 3, "unit": "days"}}
+        second_response = client.post(ENDPOINT, json=merged_payload)
+
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert second_body["intake"]["status"] == "ready_for_multimodal_processing"
+    assert second_body["intake"]["normalized_intake"]["voice_input"]["transcript"] == transcript
+    assert second_body["routing"]["specialty_slug"] == "cardiology"
+    assert second_body["provider_search"] is not None
+
+
+def test_combined_text_and_voice_input_routes_correctly() -> None:
+    # Both a typed symptom and a confirmed voice transcript are present —
+    # routing must consider both, not just one or the other.
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "symptoms": ["knee pain"],
+                "duration": {"value": 1, "unit": "days"},
+                "voice_input": {"transcript": "chest palpitations", "language": "en"},
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["routing"]["specialty_slug"] == "cardiology"
+    assert body["routing"]["method"] == "keyword_match"
+
+
+def test_emergency_precedence_unchanged_with_voice_transcript() -> None:
+    # A declared emergency must short-circuit before routing runs, even when
+    # the voice transcript itself contains text that would otherwise match a
+    # specialty — the transcript is never used to detect or override the
+    # emergency, and routing must not run at all.
+    with TestClient(app) as client:
+        response = client.post(
+            ENDPOINT,
+            json={
+                "emergency_concern": True,
+                "voice_input": {
+                    "transcript": "chest pain and heart palpitations",
+                    "language": "en",
+                },
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intake"]["status"] == "emergency"
+    assert body["routing"] is None
+    assert body["provider_search"] is None
+
+
 def test_unmatched_symptoms_skip_provider_search() -> None:
     with TestClient(app) as client:
         response = client.post(

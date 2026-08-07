@@ -282,3 +282,258 @@ running application.
 > new tests added (11 routing service — including three that monkeypatch
 > `groq.AsyncGroq` to prove the fallback path without any real network
 > call, 16 navigation HTTP, 15 Streamlit API client), for 278 total.
+
+### Phase 1D demo polish — Streamlit UI, confirmed demo data
+
+> Polish the Phase 1D Streamlit demo: replace the free-text preferred-
+> specialty field with a dropdown populated from the catalog; move the
+> Backend URL into a collapsed "Developer settings" section; add a
+> permanent visible emergency warning; replace "No matching providers
+> found" with clearer wording distinguishing successful routing from an
+> empty result; visually separate the routing result from provider-search
+> results; preserve the non-diagnostic disclaimer. Separately, inspect the
+> existing NPPES fixture and local database data (no external downloads,
+> no invented provider identities) to identify and document one
+> specialty/location combination that actually returns a result, loading
+> the fixture via the existing ingestion command if the database was
+> empty, and add a "Try demo example" button only if it can safely reuse
+> that existing fixture data — never hardcoding a provider result in the
+> UI itself.
+>
+> The database already had the Phase 1A/1B fixture and specialty catalog
+> loaded from earlier manual testing, so no re-ingestion was needed this
+> time — confirmed live against both `GET /api/v1/providers/search` and
+> `POST /api/v1/navigate`. Two fixture rows map to catalog specialties:
+> `family-medicine` in Springfield, CA (an individual provider, primary
+> taxonomy) and `general-surgery` in Holtsville, NY (an organization,
+> non-primary taxonomy). The demo button uses the first combination via
+> `"annual checkup"` (a real `family-medicine` routing keyword) rather
+> than a direct specialty pick, so it also exercises genuine keyword-based
+> routing end to end, not just a bypass. Added `list_specialties()` to
+> `streamlit_app/api_client.py` (same `httpx.MockTransport`-based test
+> pattern as `call_navigate()` — no real network in tests) and used
+> Streamlit's `key=`-plus-`session_state` pattern in an `on_click`
+> callback so the demo button can pre-fill widget values without
+> triggering Streamlit's "widget already instantiated" state-mutation
+> error. Manually verified end-to-end by running both the real FastAPI
+> server and `streamlit run` locally and confirming no exceptions and a
+> successful live call to `/api/v1/specialties`.
+>
+> No backend/API/service code changed — only `streamlit_app/{app.py,
+> api_client.py}`, one new test file addition, and documentation. No
+> database migration, no new dependency. Total tests: 280 (278 + 2 new
+> `list_specialties` client tests).
+
+### Phase 2A — real voice intake with Groq Whisper
+
+> Implement Phase 2A: real voice intake using Groq Whisper. Required flow:
+> audio upload → Groq Whisper transcription → editable transcript → user
+> confirmation → existing `/api/v1/navigate` flow → specialty routing →
+> provider search. A new `POST /api/v1/voice/transcribe` endpoint must
+> accept one multipart audio upload (mp3, wav, m4a, flac, webm), enforce a
+> conservative configurable size limit, reject empty/oversized/unsupported
+> files with typed errors, never accept remote audio URLs, never persist
+> audio or transcripts, never retain uploaded audio after the request, and
+> never log filenames, audio bytes, transcripts, or symptoms. A small STT
+> provider abstraction with Groq Whisper (`whisper-large-v3` default) as
+> the real implementation, kept outside the API route, with explicit
+> timeout/error handling and no fabricated transcripts on failure. Tests
+> must use a fake/mocked provider and never call Groq. The Streamlit UI
+> needs an audio uploader, a "Transcribe audio" action, an editable
+> transcript with a fixed review message, and an explicit confirmation
+> step before the transcript is ever forwarded — never auto-submitted —
+> resetting confirmation whenever a new file is selected, while preserving
+> every existing UI element (specialty dropdown, emergency warning,
+> developer settings, demo example, routing/provider results). STT only —
+> no TTS, no diagnosis/urgency scoring, no autonomous emergency detection,
+> no vision, no React/auth/booking/migration. `Notes/` and the existing
+> untracked `audio.mp3` must not be modified or staged.
+>
+> Groq's real SDK signature was confirmed live via `inspect.signature()`
+> (`client.audio.transcriptions.create`, accepting a `(filename, bytes,
+> content_type)` file tuple and an `extra="allow"` response model) rather
+> than assumed, confirming `whisper-large-v3` is SDK-compatible. The
+> provider (`app/providers/speech_to_text/groq.py`) raises
+> `GroqTranscriptionError` on any SDK exception or empty/blank result — it
+> never returns placeholder text. `app/services/voice_transcription_service.py`
+> validates uploads (empty/oversized/unsupported extension) before any
+> provider call and wraps provider failures into `TranscriptionProviderError`,
+> mirroring Phase 1D's "optional real-provider call, always bounded, never
+> exercised in tests" pattern used for Groq specialty routing.
+> `app/api/v1/voice.py` maps each typed error to a specific status code
+> (422 empty/unsupported, 413 oversized, 503 not-configured/provider-failed)
+> and logs only safe operational metadata (transcription id, model,
+> status, language, byte count, timing) — proven by a `caplog` test using
+> synthetic filename/transcript markers.
+>
+> On the Streamlit side, `resolve_confirmed_voice_transcript()` was
+> extracted into `api_client.py` as a small, directly unit-testable
+> function (transcript is returned only when `confirmed=True`, and blank/
+> whitespace-only transcripts are treated as absent even if confirmed) —
+> this keeps the "never auto-submit an unconfirmed transcript" rule
+> testable without relying on Streamlit's `AppTest` file-upload simulation,
+> which proved unreliable (timed out) for this Streamlit version.
+> `build_navigation_payload()` gained `voice_transcript`/`voice_language`
+> parameters that populate the existing Phase 1C `voice_input` field only
+> when a transcript is actually supplied. `app.py`'s new "Voice intake
+> (optional)" section tracks the uploaded file's Streamlit `file_id` to
+> detect a newly selected file and reset the transcript/confirmation state
+> before the transcript text area and confirmation checkbox are
+> instantiated for that run.
+>
+> One deliberate, documented limitation carried over unchanged from
+> Phase 1D: `specialty_routing_service.route_to_specialty()` only reads
+> `symptoms`/`main_concern` for keyword matching, not
+> `voice_input.transcript` — a voice-only submission (no typed text, no
+> preferred specialty) reaches `ready_for_multimodal_processing` but
+> routing reports `unmatched`. Fixing that would mean changing Phase 1D's
+> routing service, which was out of scope ("avoid unrelated abstractions
+> or refactoring"); the UI already surfaces an honest "no specialty
+> matched" message in that case rather than hiding it.
+>
+> 40 new tests added (16 `test_voice_transcription_service.py`, 13
+> `test_voice_api.py`, 11 `test_streamlit_api_client.py` additions), for
+> 320 total (280 + 40). No Alembic migration (head unchanged); `.env.example`
+> gained `GROQ_STT_TIMEOUT_SECONDS` and `VOICE_MAX_UPLOAD_BYTES`, and
+> `GROQ_STT_MODEL`'s documented default changed from `whisper-large-v3-turbo`
+> to `whisper-large-v3` for transcription accuracy over latency/cost in a
+> medical-navigation intake context.
+
+### Phase 2C — controlled image and video understanding
+
+> Continue working directly in the current MedRoute-AI repository on
+> branch R1. First confirm: R1 is synchronized with origin/R1; Phase 2A
+> and Phase 2B are committed; the full existing test suite passes; the
+> LangGraph conversation workflow and Deepgram TTS remain functional.
+> Implement Phase 2C: controlled image and video understanding through
+> the existing LangGraph conversational workflow. Product objective:
+> image or video upload → secure media validation → controlled vision
+> analysis → validated VisionObservation objects → existing intake and
+> safety flow → specialty routing → provider search → safe conversational
+> response → optional Deepgram spoken output. Requirements spanned: (1) a
+> media-upload API accepting direct file uploads only (JPEG/PNG/WebP
+> images; MP4/MOV/WebM video where decoding is available), configurable
+> conservative size limits, signature/content validation (not filename
+> extension or client MIME type), typed rejection of empty/unsupported/
+> malformed/oversized files, no filesystem paths from the client, no
+> execution of embedded media/metadata, metadata stripping, bounded
+> in-memory or securely-managed temporary-file processing removed
+> immediately after use, no database migration; (2) a controlled vision
+> schema (observation_type, body_area, visual_description,
+> visible_attributes, confidence category, source_type,
+> frame_timestamp_seconds for video, limitations) that must not contain
+> diagnosis, disease prediction, treatment, urgency score, or emergency
+> classification, rejecting/sanitizing violating model output, never
+> exposing chain-of-thought; (3) a vision provider abstraction — inspect
+> the installed SDK and project configuration before choosing an
+> implementation, no obsolete model identifier, configurable provider/
+> model/timeout/limits, locally schema-validated structured output,
+> explicit handling for missing configuration/timeout/malformed output/
+> safety/provider failure, never fabricating observations on failure,
+> fake providers only in tests; (4) a dedicated vision_analysis LangGraph
+> node, run only when validated image/video input is present, feeding
+> controlled observation text into specialty routing alongside symptoms/
+> main_concern/confirmed voice transcript, never into emergency detection,
+> preserving declared-emergency precedence and clarification interrupt/
+> resume/thread state, continuing through the existing graph from
+> specialty_routing onward, never duplicating existing logic; (5) a real
+> image workflow (validate/normalize, safe dimension/pixel limits,
+> orientation correction, metadata removal, catalog-constrained routing
+> contribution, an explicit "not a diagnosis" statement in the final
+> response); (6) a video workflow via controlled, deterministic frame
+> sampling through the same vision provider/schema — no raw video sent to
+> an LLM, validated duration/size/decode/dimensions, a configurable
+> maximum duration and sampled-frame count, preserved timestamps,
+> deduplication of substantially repeated observations, guaranteed
+> cleanup of every temporary artifact including on failure; (7) extended
+> response composition naming that media was processed, a concise
+> description of controlled observations, the selected specialty (if
+> any), provider-result availability, the non-diagnostic disclaimer, and
+> interpretation limitations, never diagnosis/treatment/medication/
+> urgency/certainty/autonomous-emergency claims; (8) Streamlit functional-
+> only additions (upload, local preview, an explicit "Analyze media"
+> action, failure-state display, controlled-observation display), while
+> preserving every existing element and requiring no voice re-
+> transcription; (9) a large required test list covering upload
+> validation (valid/empty/malformed/unsupported/oversized/spoofed/
+> decompression-bomb), schema validation and rejection of diagnostic
+> output, vision-node conditional routing, contribution to and exclusion
+> from routing/emergency detection, provider-failure handling, TTS
+> preservation on failure, video sampling/limits/timestamps/cleanup, no
+> external calls, privacy-safe logging, and full backward compatibility;
+> (10) documentation updates across `.env.example`, `README.md`,
+> `CLAUDE.md`, `PROJECT_WIKI.md`, `docs/architecture.md`,
+> `docs/roadmap.md`, and `docs/prompts-used.md`; (11) the full existing
+> validation suite plus one manual image and (if implemented successfully)
+> one short video smoke test, using only safe, non-identifying synthetic
+> assets. Do not commit or push; do not modify or stage `Notes/` or
+> `audio.mp3`.
+
+> Before choosing an implementation, the installed Groq SDK
+> (`groq>=1.6.0`, already a project dependency for STT/routing/response
+> rephrasing) was inspected live via `inspect.signature()` and confirmed
+> to support multimodal chat messages (`image_url` content parts with a
+> base64 data URL) and JSON-schema-constrained structured output
+> (`response_format={"type": "json_schema", ...}`) against its own
+> currently-supported, non-deprecated model list — `meta-llama/llama-4-
+> scout-17b-16e-instruct` was chosen over the larger
+> `llama-4-maverick-17b-128e-instruct` as the more conservative default
+> for a demo. This meant no new LLM SDK dependency was needed; `pillow`
+> was already present (transitively) and `opencv-python-headless` was
+> added as the one new dependency, for deterministic video frame decoding
+> and sampling (verified with a real in-process encode/decode round trip
+> before writing any code against it, on this Windows dev machine).
+>
+> A real, self-caught safety/testability gap: unlike `routing_mode`/
+> `response_mode` (both default to `"deterministic"`, gating any real Groq
+> call behind an explicit opt-in), the first implementation of vision
+> analysis had no equivalent switch — it attempted a real provider
+> whenever a Groq API key was configured at all. Since this repository's
+> own local, gitignored `.env` (used for manual development, never
+> committed) has a real `GROQ_API_KEY` set, an early test run actually
+> made a live outbound call before this was caught. Fixed by adding a new
+> `vision_mode` setting (default `"deterministic"`) mirroring the existing
+> pattern exactly, so a real key alone is never sufficient — this is what
+> keeps every automated test, and any environment with a real key
+> configured for other features, from ever triggering a live vision call
+> by default.
+>
+> `evaluate_intake()` (Phase 1C, otherwise unchanged) gained one additive,
+> caller-supplied `vision_concern_present` parameter — set only by the
+> graph's `normalize_intake_node` when `vision_analysis` already produced
+> at least one observation this turn — so that an image/video upload with
+> no typed text or voice transcript can satisfy intake's "concern"
+> requirement on its own, exactly like a confirmed voice transcript
+> already does; `POST /api/v1/navigate`'s call site is unaffected since it
+> never passes this argument. `route_to_specialty()` gained an analogous
+> `vision_observation_text` parameter, folded into the same deterministic
+> keyword-token set as symptoms/main_concern/voice transcript — never
+> read by the optional Groq-backed routing path, and never used for
+> emergency detection, which remains driven solely by
+> `emergency_concern`/`emergency_signals` regardless of what a directly
+> uploaded image or video shows.
+>
+> `POST /api/v1/media/analyze` is a new, dedicated multipart endpoint
+> (mirroring `POST /api/v1/voice/transcribe`'s upload-validation pattern)
+> rather than a JSON field bolted onto `POST /api/v1/converse` — raw media
+> bytes never enter checkpointed `ConversationState` at all; they are
+> validated and normalized into a small `PreparedMedia`/`MediaFrame`
+> value at the API layer, then passed transiently through
+> `config["configurable"]["media"]` (never persisted by LangGraph's
+> checkpointer) to a new `vision_analysis` node reachable via a
+> conditional edge from `START` (`route_from_start`), which only the
+> initial turn's `media_pending` flag can trigger — a resumed
+> clarification turn never re-runs it. Only the resulting, already
+> schema-validated `VisionObservation` dicts are ever written into graph
+> state.
+>
+> 84 new tests added across `test_vision_schema.py` (13),
+> `test_media_validation_service.py` (24), `test_vision_analysis_service.py`
+> (14), `test_media_api.py` (17), `test_conversation_graph.py` (+8),
+> `test_specialty_routing_service.py` (+4), `test_response_composition_service.py`
+> (+3), and `test_streamlit_api_client.py` (+2), for 508 total (424 + 84).
+> No Alembic migration (head unchanged). One pre-existing gap noted rather
+> than silently fixed: `README.md`/`PROJECT_WIKI.md`/`docs/prompts-used.md`
+> were never updated for Phase 2B, so this pass updates them for both
+> Phase 2B and Phase 2C context where needed, but does not attempt to
+> reconstruct a verbatim Phase 2B prompt entry here.

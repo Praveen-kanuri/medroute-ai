@@ -11,6 +11,32 @@ professionals. See [docs/safety-design.md](docs/safety-design.md).
 
 ## Status
 
+Phase 2C: controlled image and video understanding.
+`POST /api/v1/media/analyze` accepts one directly-uploaded image (JPEG,
+PNG, WebP) or short video (MP4, MOV, WebM) — never a remote URL — and runs
+it through the same LangGraph conversation graph as `POST /api/v1/converse`
+(Phase 2B), with a dedicated vision-analysis step first. Visual analysis
+is controlled and non-diagnostic: only structured, schema-validated
+observations (never a diagnosis, disease name, treatment suggestion,
+urgency score, or emergency classification) can ever reach a response, and
+nothing is fabricated if analysis is unavailable or fails. See [Media
+intake](#media-intake-phase-2c) below.
+
+Phase 2B: LangGraph conversational orchestration with spoken output.
+`POST /api/v1/converse` runs a compiled LangGraph graph over the same
+intake → safety-gate → clarification → specialty-routing → provider-search
+→ response-composition pipeline, adding resumable clarification
+(`thread_id` + pause/resume) and optional Deepgram text-to-speech.
+`POST /api/v1/navigate` (Phase 1D, below) remains available unchanged for
+a simple one-shot, non-conversational request.
+
+Phase 2A: real voice intake with Groq Whisper.
+`POST /api/v1/voice/transcribe` accepts one uploaded audio file and returns
+a raw speech-to-text transcript — never persisted, never auto-submitted.
+The Streamlit demo UI requires the user to review and explicitly confirm
+the transcript before it flows through the existing Phase 1C `voice_input`
+contract. See [Voice intake](#voice-intake-phase-2a) below.
+
 Phase 1D: controlled specialty routing & navigation demo.
 `POST /api/v1/navigate` composes the Phase 1C intake contract, a new
 deterministic (no-LLM-by-default) specialty router that only ever selects
@@ -330,12 +356,48 @@ curl -X POST http://localhost:8000/api/v1/navigate \
 uv run pytest tests/test_specialty_routing_service.py tests/test_navigation_api.py
 ```
 
+### Demo data: a confirmed working example
+
+The NPPES fixture (`backend/tests/fixtures/nppes_sample.csv`) is small and
+synthetic, but two rows in it map to specialties in the Phase 1B catalog,
+so a search/navigation request against them returns a real result once
+the fixture is loaded (see [Run the small fixture
+import](#nppes-provider-ingestion-phase-1a) above — idempotent, safe to
+re-run):
+
+| Specialty | Location | Matching provider (synthetic) |
+|---|---|---|
+| `family-medicine` | city=`Springfield`, state=`CA` | "Jane Q Smith, MD, FACP" (individual, primary taxonomy `207Q00000X`) |
+| `general-surgery` | city=`Holtsville`, state=`NY` | "Springfield Clinic LLC" (organization, taxonomy `208600000X`) |
+
+Verified directly against both `GET /api/v1/providers/search` and
+`POST /api/v1/navigate`:
+
+```bash
+curl "http://localhost:8000/api/v1/providers/search?specialty=family-medicine&city=Springfield&state=CA"
+
+curl -X POST http://localhost:8000/api/v1/navigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symptoms": ["annual checkup"],
+    "duration": {"value": 1, "unit": "days"},
+    "location": {"city": "Springfield", "state": "CA"}
+  }'
+```
+
+The second request deliberately uses `"annual checkup"` rather than
+`preferred_specialty` — `"checkup"` is one of `family-medicine`'s
+deterministic routing keywords (see
+`app/catalog/nucc_specialties.py`), so this also exercises real
+keyword-based routing end to end, not just a direct specialty pick.
+
 ### Streamlit demo UI
 
 A lightweight demo frontend (`backend/streamlit_app/`) calls
-`/api/v1/navigate` only — it contains no routing, ranking, or search logic
-of its own. This is a **demo UI, not the planned production frontend**
-(React remains Phase 5, a separate later milestone).
+`/api/v1/navigate` and `/api/v1/specialties` only — it contains no
+routing, ranking, or search logic of its own, and never hardcodes a
+provider result. This is a **demo UI, not the planned production
+frontend** (React remains Phase 5, a separate later milestone).
 
 Run (from `backend/`, with the API already running at `localhost:8000`):
 
@@ -343,14 +405,37 @@ Run (from `backend/`, with the API already running at `localhost:8000`):
 uv run streamlit run streamlit_app/app.py
 ```
 
-Supports text symptoms, main concern, duration, location, a preferred-
-specialty slug, and a user-declared emergency checkbox; displays the
-clarification/emergency/media-unavailable/routed/provider-result states
-and the non-diagnostic and emergency disclaimers. It does not persist or
-log anything itself — each submission is a single forwarded request.
+- A permanent warning is always shown: if you believe you may be
+  experiencing a medical emergency, don't use this demo — call 911 (U.S.).
+- The Backend URL lives in a collapsed **Developer settings** section in
+  the sidebar; most users never need to touch it.
+- **Preferred specialty** is a dropdown populated live from
+  `GET /api/v1/specialties` (falls back to "no specialty selected" if the
+  backend is unreachable) — no free-text slug entry.
+- **Try demo example** pre-fills the form with the confirmed
+  `family-medicine` / Springfield, CA combination above — it only fills in
+  inputs; the result shown always comes from a real call to the backend.
+- The routing result and the provider-search results are shown in clearly
+  separate sections. When routing succeeds but nothing matches, the UI
+  says so explicitly ("Specialty routing succeeded, but no matching
+  providers are currently loaded for this location.") rather than a bare
+  "not found."
+- Supports text symptoms, main concern, duration, location, and a
+  user-declared emergency checkbox; displays the clarification/emergency/
+  media-unavailable/routed/provider-result states and the non-diagnostic
+  and emergency disclaimers. It does not persist or log anything itself —
+  each submission is a single forwarded request.
+- A **Voice intake (optional)** section (Phase 2A) lets you upload an
+  audio file and transcribe it via Groq Whisper — see [Voice
+  intake](#voice-intake-phase-2a) below for the full workflow and its
+  confirmation requirement.
+- An **Image/video intake (optional)** section (Phase 2C) lets you upload
+  an image or short video, preview it locally, and click **"Analyze
+  media"** to run a full conversation turn — see [Media
+  intake](#media-intake-phase-2c) below.
 
 **Run the Streamlit API client tests** (payload construction + the HTTP
-call, against a mock transport — no real network):
+calls, against a mock transport — no real network):
 
 ```bash
 uv run pytest tests/test_streamlit_api_client.py
@@ -358,12 +443,139 @@ uv run pytest tests/test_streamlit_api_client.py
 
 ### What's deferred
 
-Real text/vision-model understanding (rather than deterministic keyword
-matching), a full LLM-provider abstraction, non-diagnostic visual
-description, and model-evaluation fixtures remain future work — see
+A full general-purpose LLM-provider abstraction (Groq is called directly
+where needed instead, following a validated/silent-fallback pattern) and
+model-evaluation fixtures remain future work — see
 [docs/architecture.md](docs/architecture.md)'s "Beyond Phase 1D" notes.
 Appointment scheduling/booking, authentication, and the production
 frontend are separate, later milestones.
+
+## Voice intake (Phase 2A)
+
+`POST /api/v1/voice/transcribe` accepts one multipart audio upload and
+returns a raw speech-to-text transcript using Groq's hosted Whisper models.
+This endpoint performs transcription only — it never interprets, diagnoses,
+or scores urgency, and the returned transcript is not verified medical
+information.
+
+- **Supported formats:** mp3, wav, m4a, flac, webm.
+- **Size limit:** `VOICE_MAX_UPLOAD_BYTES` (default 10,000,000 bytes / 10 MB).
+- **Requires `GROQ_API_KEY`** (see `.env.example`). Returns `503` if not
+  configured, or if the Groq call fails/times out — it never fabricates a
+  transcript on failure.
+- **Model:** `GROQ_STT_MODEL` (default `whisper-large-v3`); timeout via
+  `GROQ_STT_TIMEOUT_SECONDS` (default 30s).
+- **No remote audio URLs** — the file must be uploaded directly.
+- **Nothing is persisted.** Audio and transcripts are never written to the
+  database or retained after the request; only safe operational metadata
+  (transcription id, model, status, language, byte count, timing) is
+  logged — never filenames, audio bytes, transcripts, or symptoms.
+- **Speech-to-text only.** No text-to-speech in Phase 2A (deferred, see
+  `docs/roadmap.md`'s Phase 4).
+
+**Example request** (using the repo's local `audio.mp3`, if present and not
+committed — never stage or commit real or test audio files):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/voice/transcribe \
+  -F "file=@audio.mp3"
+```
+
+**Streamlit confirmation workflow:** upload an audio file, click
+**"Transcribe audio"**, then review the editable transcript. The UI always
+shows: *"Please review and correct the transcript before continuing.
+Speech recognition may contain errors."* The transcript is only included in
+the `/api/v1/navigate` request after you check **"I have reviewed this
+transcript and confirm it is ready to use"** — an unconfirmed or
+unreviewed transcript is never auto-submitted. Selecting a new audio file
+always resets any prior transcript and confirmation. Confirmed transcripts
+are sent via the existing Phase 1C `voice_input` field alongside (not
+replacing) the text symptom/main-concern fields, which remain independently
+usable.
+
+**Run voice intake tests** (a fake/mocked provider only — these never call
+Groq):
+
+```bash
+uv run pytest tests/test_voice_transcription_service.py tests/test_voice_api.py
+```
+
+## Media intake (Phase 2C)
+
+`POST /api/v1/media/analyze` accepts one directly-uploaded image or short
+video and runs it through the same LangGraph conversation graph as
+`POST /api/v1/converse` (Phase 2B), with a dedicated vision-analysis step
+first. It never accepts a remote URL or filesystem path.
+
+- **Supported formats:** JPEG, PNG, WebP (images); MP4, MOV, WebM (video).
+  Detected by inspecting the actual file signature — never the filename
+  extension or the client-declared `Content-Type`.
+- **Size limits:** `IMAGE_MAX_UPLOAD_BYTES` (default 8,000,000 bytes) /
+  `VIDEO_MAX_UPLOAD_BYTES` (default 50,000,000 bytes).
+- **Image processing:** validated and re-encoded via Pillow — EXIF
+  orientation corrected, metadata stripped, and dimensions/pixel count
+  bounded by `IMAGE_MAX_DIMENSION_PX`/`IMAGE_MAX_PIXELS` (a
+  decompression-bomb guard).
+- **Video processing:** decoded via OpenCV in a temporary file (always
+  removed afterward, including on failure); duration
+  (`VIDEO_MAX_DURATION_SECONDS`) and dimensions
+  (`VIDEO_MAX_DIMENSION_PX`) are validated, then a bounded, deterministic
+  number of frames (`VIDEO_MAX_SAMPLED_FRAMES`, evenly spread across the
+  video) is sampled — the raw video is never sent to a model.
+- **Controlled visual observations only.** Each sampled frame is analyzed
+  by Groq's current, generally-available vision model
+  (`GROQ_VISION_MODEL`, default `qwen/qwen3.6-27b` — confirmed live
+  against Groq's own docs and an actual API call; no Groq vision model
+  currently supports strict JSON-schema output, so the request uses
+  `json_object` mode plus an explicit shape description in the prompt)
+  requesting only a bounded shape (observation type, body area, a short
+  visual description, visible attributes, a coarse confidence category,
+  and limitations) — never a diagnosis, disease name, treatment
+  suggestion, urgency score, or emergency classification. Every candidate
+  observation is independently re-validated against the
+  `VisionObservation` schema before being trusted; anything that violates
+  it is dropped, never fabricated into something safer-looking.
+- **Requires `GROQ_API_KEY` *and* `VISION_MODE=groq`** (see
+  `.env.example`) — unlike routing/response text, there is no non-model
+  "vision" fallback, so `VISION_MODE` defaults to `deterministic` (vision
+  analysis off) so that a real API key configured for other features never
+  causes an unexpected live call. If not enabled/configured, or if the
+  call fails, the endpoint still completes the full turn using any text or
+  voice information supplied, with a safe status note instead of visual
+  observations — it never fails the request just because vision analysis
+  didn't run.
+- **Nothing is persisted.** Uploaded media, extracted frames, and
+  temporary files are never written to the database or retained after the
+  request; only safe operational metadata (media kind, frame count,
+  status, timing) is logged — never filenames or media bytes.
+- Visual observations contribute to the same deterministic specialty
+  routing as symptoms/main concern/a confirmed voice transcript (Phase
+  1D/2A), and an image/video upload alone can satisfy intake's requirement
+  for a described concern — but they never influence emergency detection,
+  which remains strictly user-declared.
+
+**Example request:**
+
+```bash
+curl -X POST http://localhost:8000/api/v1/media/analyze \
+  -F "file=@photo.jpg" \
+  -F 'intake_json={"duration": {"value": 2, "unit": "days"}}'
+```
+
+**Streamlit workflow:** upload an image or short video, review the local
+preview, then click **"Analyze media"** — this runs the same full
+conversation turn as "Submit" (carrying whatever other form fields are
+already filled in) and displays the returned visual observations alongside
+the routing/provider-search/response sections. Selecting a new file always
+invalidates any prior media-analysis result.
+
+**Run media intake tests** (fake providers and synthetic in-memory
+images/video only — these never call Groq):
+
+```bash
+uv run pytest tests/test_media_validation_service.py tests/test_vision_schema.py \
+  tests/test_vision_analysis_service.py tests/test_media_api.py
+```
 
 ## Validation
 

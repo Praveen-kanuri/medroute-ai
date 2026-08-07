@@ -30,16 +30,31 @@ and simulates appointment booking.
 backend/app/
   api/            FastAPI routers (versioned under /api/v1)
   config/         Environment-driven settings (pydantic-settings)
-  graph/          LangGraph routing graph (future milestone)
+  graph/          LangGraph multi-agent conversation graph (state.py, nodes.py,
+                    build.py) — supervisor_router -> conversation_agent |
+                    vision_agent | medical_intake_agent -> safety_gate ->
+                    clarification -> clinical_intake_agent (Phase 3A, a
+                    no-op unless a known complaint protocol matches) ->
+                    clinical_red_flag_gate -> specialty_routing_agent ->
+                    provider_search_agent -> response_agent -> text_to_speech
   providers/      Abstract provider interfaces + fake implementations
     llm/                TextLLMProvider
-    speech_to_text/      SpeechToTextProvider
-    text_to_speech/      TextToSpeechProvider
-  safety/         Emergency disclaimers + user-declared emergency constants
+    speech_to_text/      SpeechToTextProvider (real: Deepgram primary, Groq fallback)
+    text_to_speech/      TextToSpeechProvider (real: Deepgram primary, Groq fallback)
+    vision/              VisionProvider (real: Groq multimodal chat model)
+  safety/         Emergency disclaimers + user-declared emergency constants +
+                    shared forbidden-medical-claim-term lists + Phase 3A's
+                    dedicated deterministic red-flag rules (red_flag_rules.py)
   schemas/        Pydantic v2 domain models (intake, multimodal_intake, routing,
-                    doctor, booking, provider_search)
+                    doctor, booking, provider_search, voice_intake, conversation,
+                    vision, clinical_context)
   services/       Pure business logic (provider ranking/search, multimodal intake,
-                    deterministic specialty routing)
+                    deterministic specialty routing, voice transcription orchestration,
+                    duration extraction, response composition, text-to-speech
+                    orchestration, conversation-graph orchestration, media upload
+                    validation/normalization, vision-provider orchestration,
+                    per-complaint clinical-context intake (clinical_intake_service.py),
+                    negation-aware phrase classification (mention_classification_service.py))
   tools/          LangGraph tool implementations (future milestone)
   main.py         FastAPI app factory
 streamlit_app/    Lightweight demo UI (calls the API only; no logic of its own)
@@ -77,15 +92,45 @@ All must pass before considering a change complete.
 
 ## Current milestone
 
-Phase 1D — controlled specialty routing and navigation demo. A stateless
-`POST /api/v1/navigate` endpoint composes the Phase 1C intake contract,
-a new deterministic (no-LLM-by-default) specialty router that only ever
-selects from the Phase 1B specialty catalog, and the existing Phase 1B
-provider search — preserving emergency/clarification precedence exactly.
-An optional Groq-backed router is available via `ROUTING_MODE=groq` but
-is always validated against the catalog and falls back to deterministic
-on any failure; it is never exercised in tests. Image/video URLs are
-still never fetched or analyzed. A lightweight Streamlit demo UI
-(`backend/streamlit_app/`) calls this endpoint; React remains the
-planned production frontend (Phase 5), not replaced by Streamlit. See
-`docs/roadmap.md` for what comes next.
+Phase 3A — extensible per-complaint clinical-context intake and a
+dedicated, deterministic red-flag safety gate, vertically sliced through
+one complaint: unilateral/one-sided leg swelling. `POST /api/v1/converse`
+(and `/api/v1/media/analyze`) route through the multi-agent graph's
+`clinical_intake_agent` node, inserted between the existing `clarification`
+and `specialty_routing_agent` nodes — a complete no-op (falls straight
+through, exactly as before Phase 3A) for any concern matching no known
+protocol (`app/services/clinical_intake_service.py`'s `ClinicalProtocol`
+registry, currently one entry). For a matched protocol, it asks its own
+ordered questions one at a time via the same `interrupt()`/
+`Command(resume=...)` mechanism `clarification` already uses (self-looping
+via a conditional edge back to itself), skipping any question the original
+message already answered, and accepting either a typed
+(`clarification_answer.clinical_answer_text`) or spoken
+(`clarification_answer.voice_transcript`) answer through the existing
+resume path — no dedicated voice-UI change was needed.
+
+A dedicated `clinical_red_flag_gate` node (`app/safety/red_flag_rules.py`)
+runs immediately after the leg-swelling protocol's red-flag question is
+answered, always before specialty/provider routing — deterministic
+keyword/negation matching only (`app/services/mention_classification_service.py`),
+no model call, distinguishing affirmed ("I have chest pain") from negated
+("no chest pain") from unknown ("I'm not sure" — never treated as
+affirmed). An affirmed flag reuses the existing `is_emergency`/
+`EMERGENCY_SAFETY_MESSAGE` path unchanged; it never identifies a disease
+and never overrides the existing user-declared emergency precedence
+(checked first, unconditionally, by the pre-existing `safety_gate` node).
+
+Once a protocol's questions are all answered with no red flag affirmed, a
+bounded `ClinicalNavigationSummary` (`app/schemas/clinical_context.py`,
+`diagnosis`/`treatment_recommendation` always `None`) is produced from a
+small, reviewable per-protocol definition — never RAG, never scraped
+content — and exposed as `ConversationResponse.clinical_navigation`, folded
+into the existing response text and the Streamlit chat feed. Specialty
+candidates are drawn only from the existing Phase 1B/1D catalog (extended
+with a few leg-swelling-relevant keywords on Internal Medicine — no new
+specialty, no bypassed routing contract).
+
+`POST /api/v1/converse`, `POST /api/v1/navigate`, and `POST
+/api/v1/media/analyze` are otherwise unchanged. See `docs/roadmap.md` for
+the full Phase 3A entry (and the Phase 2C entry for image/video
+understanding, delivered earlier).

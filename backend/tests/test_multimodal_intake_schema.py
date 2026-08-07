@@ -112,7 +112,7 @@ def test_unknown_nested_field_rejected() -> None:
         )
 
 
-@pytest.mark.parametrize("unit", ["hours", "days", "weeks", "months"])
+@pytest.mark.parametrize("unit", ["hours", "days", "weeks", "months", "years"])
 def test_duration_accepts_each_unit(unit: str) -> None:
     duration = Duration(value=1, unit=DurationUnit(unit))
     assert duration.unit == unit
@@ -130,7 +130,7 @@ def test_duration_rejects_negative() -> None:
 
 def test_duration_rejects_unsupported_unit() -> None:
     with pytest.raises(ValidationError):
-        Duration.model_validate({"value": 1, "unit": "years"})
+        Duration.model_validate({"value": 1, "unit": "decades"})
 
 
 def test_duration_rejects_unreasonably_large_value() -> None:

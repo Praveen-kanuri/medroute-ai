@@ -16,12 +16,14 @@ async def test_fake_text_llm_provider_echoes_prompt() -> None:
 async def test_fake_speech_to_text_provider_reports_byte_count() -> None:
     provider = FakeSpeechToTextProvider()
     result = await provider.transcribe(b"1234567890")
-    assert "10 bytes" in result
+    assert "10 bytes" in result.text
+    assert result.provider == "fake"
 
 
 @pytest.mark.asyncio
 async def test_fake_text_to_speech_provider_returns_bytes() -> None:
     provider = FakeTextToSpeechProvider()
     result = await provider.synthesize("hello")
-    assert isinstance(result, bytes)
-    assert b"hello" in result
+    assert isinstance(result.audio_bytes, bytes)
+    assert b"hello" in result.audio_bytes
+    assert result.provider == "fake"
